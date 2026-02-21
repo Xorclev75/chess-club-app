@@ -21,6 +21,9 @@ const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Health check
+app.get("/health", (req, res) => res.status(200).send("ok"));
+
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
