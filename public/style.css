@@ -1,0 +1,416 @@
+/* ---------- Base ---------- */
+:root{
+  --bg: #0b1220;
+  --card: rgba(255,255,255,0.08);
+  --card2: rgba(255,255,255,0.12);
+  --text: #e9eefc;
+  --muted: rgba(233,238,252,0.75);
+  --accent: #7c5cff;
+  --accent2: #22c55e;
+  --danger: #ef4444;
+  --border: rgba(255,255,255,0.14);
+  --shadow: 0 18px 50px rgba(0,0,0,0.35);
+}
+
+*{ box-sizing: border-box; }
+
+body{
+  margin:0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(124,92,255,0.35), transparent 60%),
+    radial-gradient(900px 500px at 80% 30%, rgba(34,197,94,0.18), transparent 55%),
+    radial-gradient(800px 600px at 30% 90%, rgba(56,189,248,0.16), transparent 55%),
+    var(--bg);
+  min-height:100vh;
+}
+
+.container{
+  width:min(1000px, 92vw);
+  margin: 28px auto 60px;
+}
+
+h1, h2 {
+  font-family: 'Cinzel', serif;
+}
+
+h1{
+  font-size: 2rem;
+  margin: 0 0 6px;
+  letter-spacing: 0.3px;
+}
+
+.subhead{
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+
+.card{
+  background: linear-gradient(180deg, var(--card), rgba(255,255,255,0.05));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 16px 16px 14px;
+  backdrop-filter: blur(10px);
+}
+
+/* ---------- Forms ---------- */
+.row{
+  display:flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items:center;
+}
+
+input[type="text"],
+input[type="date"],
+select{
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: var(--text);
+  padding: 10px 12px;
+  /*border-radius: 12px;*/
+  outline: none;
+  min-height: 40px;
+}
+
+input::placeholder{ color: rgba(233,238,252,0.55); }
+
+input:focus, select:focus{
+  border-color: rgba(124,92,255,0.7);
+  box-shadow: 0 0 0 4px rgba(124,92,255,0.18);
+}
+
+#level {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,0.18);
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+#level option {
+  background: #1a2238;   /* dark background */
+  color: #fff;           /* white text */
+}
+
+select {
+  color-scheme: dark;
+}
+
+/* --------- Modals -------- */
+.modal-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  z-index: 9999;
+}
+
+.modal{
+  width: min(560px, 96vw);
+  background: rgba(20, 26, 44, 0.92);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 16px;
+  box-shadow: 0 30px 90px rgba(0,0,0,0.55);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+
+.modal-header{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+
+.modal-body{
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.modal-actions{
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+.field label{
+  display: block;
+  font-size: 0.9rem;
+  color: rgba(233,238,252,0.75);
+  margin-bottom: 6px;
+}
+
+.field input,
+.field select,
+.field textarea{
+  width: 100%;
+}
+
+.field textarea{
+  min-height: 90px;
+  resize: vertical;
+}
+
+.hidden{ display: none !important; }
+
+/* Base select styling */
+select {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,0.18);
+  padding: 10px 12px;
+  border-radius: 12px;
+  appearance: none;
+}
+
+/* Dropdown list items */
+select option {
+  background: #1a2238;   /* dark background */
+  color: #ffffff;        /* white text */
+}
+
+/* Ensure browser uses dark rendering */
+select {
+  color-scheme: dark;
+}
+
+/* ---- Info Icon ------ */
+.note-indicator {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: #22c55e; /* green */
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+  vertical-align: middle;
+  cursor: help;
+}
+
+
+/* ---------- Buttons ---------- */
+.admin-btn{
+  padding: 10px 14px;
+  margin-left: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.10);
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 0.06s ease, background 0.2s ease, border-color 0.2s ease;
+  font-weight: 600;
+}
+
+.admin-btn:hover{
+  background: rgba(255,255,255,0.16);
+  border-color: rgba(255,255,255,0.26);
+}
+
+.admin-btn:active{ transform: translateY(1px); }
+
+.btn-primary{
+  background: linear-gradient(135deg, rgba(124,92,255,0.95), rgba(124,92,255,0.55));
+  border-color: rgba(124,92,255,0.7);
+}
+
+.btn-primary:hover{
+  background: linear-gradient(135deg, rgba(124,92,255,1), rgba(124,92,255,0.65));
+}
+
+.btn-danger{
+  background: rgba(239,68,68,0.18);
+  border-color: rgba(239,68,68,0.45);
+}
+
+.btn-danger:hover{
+  background: rgba(239,68,68,0.26);
+  border-color: rgba(239,68,68,0.6);
+}
+
+.player-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.btn-wrap {
+  display: inline-flex;
+  gap: 8px;
+}
+
+
+/* --------- Player List -------------*/
+#playerTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#playerTable th {
+  border-right: 1px solid rgba(255,255,255,0.15);
+}
+
+#playerTable th:last-child {
+  border-right: none;
+}
+
+#playerTable thead th{
+  position: sticky;
+  top: 0;
+  background: rgba(255,255,255,0.10);
+  backdrop-filter: blur(8px);
+  text-align: left;
+  padding: 12px 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  border-bottom: 1px solid rgba(255,255,255,0.16);
+}
+
+#playerTable td {
+  padding: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+#playerTable tbody tr:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+#playerTable tbody tr:nth-child(odd){
+  background: rgba(255,255,255,0.04);
+}
+
+#playerTable tbody tr:hover{
+  background: rgba(124,92,255,0.12);
+}
+
+
+/* ---------- Lists ---------- */
+ul{
+  padding-left: 18px;
+  margin: 10px 0 0;
+}
+
+li{
+  margin: 8px 0;
+  color: var(--text);
+}
+
+hr{
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.14);
+  margin: 18px 0;
+}
+
+/* ---------- Schedule Print Area ---------- */
+#printArea{
+  margin-top: 14px;
+}
+
+#printTitle{
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+}
+
+#printMeta{
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+
+.table-wrap{
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.06);
+}
+
+#printTable{
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#printTable th {
+  border-right: 1px solid rgba(255,255,255,0.15);
+}
+
+#printTable th:last-child {
+  border-right: none;
+}
+
+#printTable thead th{
+  position: sticky;
+  top: 0;
+  background: rgba(255,255,255,0.10);
+  backdrop-filter: blur(8px);
+  text-align: left;
+  padding: 12px 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  border-bottom: 1px solid rgba(255,255,255,0.16);
+}
+
+#printTable tbody td{
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+}
+
+#printTable tbody tr:nth-child(odd){
+  background: rgba(255,255,255,0.04);
+}
+
+#printTable tbody tr:hover{
+  background: rgba(124,92,255,0.12);
+}
+
+/* ---------- Print rules (keep) ---------- */
+@media print{
+  body{
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .card, .table-wrap{
+    box-shadow: none !important;
+    border: 1px solid #000 !important;
+    background: #fff !important;
+  }
+
+  body * { visibility: hidden; }
+  #printArea, #printArea * { visibility: visible; }
+
+  #printArea{
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+
+  button, .no-print, .app-footer { display: none !important; }
+}
+
+
+/* --- Footer --- */
+.app-footer {
+  margin-top: 60px;
+  padding: 20px 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: rgba(233, 238, 252, 0.6);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.app-footer strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
