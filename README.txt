@@ -7,15 +7,29 @@ npm install express
 Start the server:
 node server.js
 
+Push to Github:
+git add server.js
+git commit -m "Update favicon, score, and icons"
+git push
+
 URL:
-http://localhost:3001
+https://chess-club-app-6112.onrender.com
+
+Check Health:
+https://chess-club-app-6112.onrender.com/health
 
 Next steps:
-1. Host on Railway or Render (via Github)
-2. Use Postgres (SQL) as backend
-3. Rewrite minimal code
+1. Time code is weird (2026-02-26T00:00:00.000Z, why do we have to enter it when editing a match?)
+
+to_char(m.match_date, 'YYYY-MM-DD') AS "date"
+
+
+2. Delete button not working (it works but there's a delay)
+3. Cannot save changes to Players either (it works but there's a delay)
 4. Separate HTML tables on print (by level)
 5. Add back information icon when a match is updated
+6. Score is weird: 0.00
+7. No favicon
 
 
 SQL Notes:
@@ -37,6 +51,8 @@ Add to program.json:  (where?)
   "start": "node server.js",
   "dev": "nodemon server.js"
 }
+
+
 
 
 

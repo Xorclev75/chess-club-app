@@ -184,7 +184,7 @@ select {
   color-scheme: dark;
 }
 
-/* ---- Info Icon ------ */
+/* ---- Icons ------ */
 .note-indicator {
   display: inline-block;
   width: 10px;
@@ -195,6 +195,11 @@ select {
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
   vertical-align: middle;
   cursor: help;
+}
+
+.white-pawn {
+  color: white;
+  font-size: 2rem;
 }
 
 
