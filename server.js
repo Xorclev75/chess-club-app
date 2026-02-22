@@ -31,10 +31,10 @@ const { Pool } = require("pg");
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
 //CORS
-const express = require("express");
+//const express = require("express");
 const cors = require("cors");
 
-const app = express();
+//const app = express();
 
 app.use(cors()); // allow all origins for now
 app.use(express.json());
