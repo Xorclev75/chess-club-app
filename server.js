@@ -1,5 +1,18 @@
 // server.js (Postgres version)
 require("dotenv").config();
+const express = require("express");
+
+const app = express();
+
+const PORT = process.env.PORT || 10000;
+
+app.get("/", (req, res) => {
+  res.send("Chess Club app running");
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Chess Club app running at http://localhost:${PORT}`);
+});
 
 try {
   const u = new URL(process.env.DATABASE_URL);
@@ -17,9 +30,6 @@ const { Pool } = require("pg");
 
 
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
-
-const app = express();
-const PORT = process.env.PORT || 3000;
 
 //CORS
 const express = require("express");
