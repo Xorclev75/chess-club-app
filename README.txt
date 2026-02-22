@@ -8,9 +8,11 @@ Start the server:
 node server.js
 
 Push to Github:
-git add server.js
-git commit -m "Update favicon, score, and icons"
-git push
+git status
+git add .
+git commit -m "update"
+git push origin main
+
 
 URL:
 https://chess-club-app-6112.onrender.com

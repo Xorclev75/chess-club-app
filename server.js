@@ -19,7 +19,16 @@ const { Pool } = require("pg");
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
+
+//CORS
+const express = require("express");
+const cors = require("cors");
+
+const app = express();
+
+app.use(cors()); // allow all origins for now
+app.use(express.json());
 
 // Health check
 app.get("/health", (req, res) => res.status(200).send("ok"));
@@ -28,6 +37,8 @@ app.get("/health", (req, res) => res.status(200).send("ok"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
+
+
 
 // Postgres pool
 const pool = new Pool({
