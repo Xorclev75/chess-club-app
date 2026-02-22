@@ -23,7 +23,6 @@ try {
   console.log("DATABASE_URL is not a valid URL:", e.message);
 }
 
-const express = require("express");
 const path = require("path");
 const { Pool } = require("pg");
 
