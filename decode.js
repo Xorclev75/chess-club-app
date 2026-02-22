@@ -1,1 +1,0 @@
-console.log(decodeURIComponent(process.argv[2]));
