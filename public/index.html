@@ -342,7 +342,7 @@
       await loadPlayers();
     } catch (err) {
       console.error(err);
-      alert("Delete failed. Check console.");
+      alert("Delete failed. Player may be involved in a scheduled match.  Check console.");
     } finally {
       if (btn) {
         btn.disabled = false;

@@ -10,6 +10,15 @@ const cors = require("cors");
 const path = require("path");
 const { Pool } = require("pg");
 
+const pool = new Pool({
+connectionString: process.env.DATABASE_URL,
+max: 5, // VERY important (keep low)
+idleTimeoutMillis: 10000,
+connectionTimeoutMillis: 5000,
+})
+
+console.log(pool.totalCount, pool.idleCount, pool.waitingCount);
+
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
 const app = express();
