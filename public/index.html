@@ -507,55 +507,72 @@
     setScheduleDirty(false);
   }
 
+// Render Matches
+  
   function renderMatches(matches) {
-    const tbody = document.querySelector("#printTable tbody");
-    if (!tbody) return;
+  const tbody = document.querySelector("#printTable tbody");
+  tbody.innerHTML = "";
 
-    tbody.innerHTML = "";
+  if (!matches || matches.length === 0) return;
 
-    (matches || []).forEach((m) => {
-      const tr = document.createElement("tr");
+  // Sort by level then by date
+  const sorted = [...matches].sort((a, b) => {
+    if (a.level !== b.level) return a.level - b.level;
+    return a.date.localeCompare(b.date);
+  });
 
-      const tdDate = document.createElement("td");
-      tdDate.textContent = m.date;
+  let currentLevel = null;
 
-      const tdLevel = document.createElement("td");
-      tdLevel.textContent = `Level ${m.level}`;
+  sorted.forEach(m => {
+    // When level changes → insert sub-header row
+    if (m.level !== currentLevel) {
+      currentLevel = m.level;
 
-      const tdPlayer = document.createElement("td");
-      tdPlayer.textContent = m.player1;
+      const levelRow = document.createElement("tr");
+      levelRow.className = "level-divider";
 
-      const tdOpponent = document.createElement("td");
-      tdOpponent.textContent = m.player2;
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.textContent = `Level ${currentLevel}`;
+      td.className = "level-header";
 
-      const tdActions = document.createElement("td");
-      tdActions.className = "no-print";
+      levelRow.appendChild(td);
+      tbody.appendChild(levelRow);
+    }
 
-      // Info indicator if notes/result/status set
-      if (hasMatchInfo(m)) {
-        const info = document.createElement("span");
-        info.textContent = "ℹ️";
-        info.title = "This match has notes/result/status updates";
-        info.style.marginRight = "8px";
-        tdActions.appendChild(info);
-      }
+    const tr = document.createElement("tr");
 
-      const editBtn = document.createElement("button");
-      editBtn.textContent = "Edit";
-      editBtn.className = "admin-btn";
-      editBtn.addEventListener("click", () => editMatch(m));
+    const tdDate = document.createElement("td");
+    tdDate.textContent = m.date;
 
-      tdActions.appendChild(editBtn);
+    const tdLevel = document.createElement("td");
+    tdLevel.textContent = `Level ${m.level}`;
 
-      tr.appendChild(tdDate);
-      tr.appendChild(tdLevel);
-      tr.appendChild(tdPlayer);
-      tr.appendChild(tdOpponent);
-      tr.appendChild(tdActions);
+    const tdPlayer = document.createElement("td");
+    tdPlayer.textContent = m.player1;
 
-      tbody.appendChild(tr);
-    });
-  }
+    const tdOpponent = document.createElement("td");
+    tdOpponent.textContent = m.player2;
+
+    const tdActions = document.createElement("td");
+    tdActions.className = "no-print";
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.className = "admin-btn";
+    editBtn.addEventListener("click", () => editMatch(m));
+
+    tdActions.appendChild(editBtn);
+
+    tr.appendChild(tdDate);
+    tr.appendChild(tdLevel);
+    tr.appendChild(tdPlayer);
+    tr.appendChild(tdOpponent);
+    tr.appendChild(tdActions);
+
+    tbody.appendChild(tr);
+  });
+}
 
   // ---------- Filter by date ----------
   function applyDateFilter() {

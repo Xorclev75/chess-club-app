@@ -215,6 +215,32 @@ select {
   filter: drop-shadow(0 2px 10px rgba(0,0,0,0.35));
 }
 
+/* --------- Table Levels ------- */
+.level-divider td {
+  padding-top: 25px;
+  border: none;
+}
+
+.level-header {
+  font-weight: bold;
+  font-size: 1.1rem;
+  text-align: left;
+  padding: 10px 0;
+  border-bottom: 2px solid #444;
+}
+
+/* Print styling */
+@media print {
+  .level-header {
+    font-size: 14pt;
+    border-bottom: 2px solid #000;
+  }
+
+  .level-divider td {
+    padding-top: 20px;
+  }
+}
+
 
 /* ---------- Buttons ---------- */
 .admin-btn{
