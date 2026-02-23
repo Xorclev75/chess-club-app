@@ -22,7 +22,7 @@ console.log(pool.totalCount, pool.idleCount, pool.waitingCount);
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 10000;
 
 // ---------- Middleware ----------
 app.use(cors());
