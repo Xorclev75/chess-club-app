@@ -8,7 +8,6 @@ dns.setDefaultResultOrder("ipv4first");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { Pool } = require("pg");
 
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
@@ -27,6 +26,8 @@ if (!process.env.DATABASE_URL) {
 }
 
 // ---------- Postgres pool (ONE pool only) ----------
+const { Pool } = require("pg");
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -34,9 +35,6 @@ const pool = new Pool({
   idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 5000,
 });
-
-// Optional: quick pool stats (not super meaningful until used)
-console.log("Pool config loaded. max=5");
 
 // ---------- Helpers ----------
 function formatDateCA(d) {
