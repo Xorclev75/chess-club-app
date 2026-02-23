@@ -8,7 +8,7 @@ dns.setDefaultResultOrder("ipv4first");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-
+const { Pool } = require("pg");
 
 const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
@@ -21,21 +21,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// ---------- Postgres pool ----------
+// ---------- Env guard ----------
 if (!process.env.DATABASE_URL) {
   console.error("Missing DATABASE_URL env var.");
 }
 
-const { Pool } = require("pg");
-
+// ---------- Postgres pool (ONE pool only) ----------
 const pool = new Pool({
-connectionString: process.env.DATABASE_URL,
-max: 5, // VERY important (keep low)
-idleTimeoutMillis: 10000,
-connectionTimeoutMillis: 5000,
-})
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 5,                    // keep low on free tiers
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+});
 
-console.log(pool.totalCount, pool.idleCount, pool.waitingCount);
+// Optional: quick pool stats (not super meaningful until used)
+console.log("Pool config loaded. max=5");
 
 // ---------- Helpers ----------
 function formatDateCA(d) {
@@ -44,6 +45,11 @@ function formatDateCA(d) {
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function sendServerError(res, route, err) {
+  console.error(`${route} failed:`, err);
+  return res.status(500).json({ message: "Server error" });
 }
 
 async function getPlayersByLevel(client = pool) {
@@ -57,11 +63,6 @@ async function getPlayersByLevel(client = pool) {
     levels[p.level].push(p);
   }
   return levels;
-}
-
-function sendServerError(res, route, err) {
-  console.error(`${route} failed:`, err);
-  return res.status(500).json({ message: "Server error" });
 }
 
 // ---------- Health ----------
@@ -140,16 +141,30 @@ app.put("/players/:id", async (req, res) => {
   }
 });
 
+// IMPORTANT: prevent deleting a player used in saved matches
 app.delete("/players/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM matches
+       WHERE player1_id = $1 OR player2_id = $1`,
+      [id]
+    );
+
+    if (rows[0].cnt > 0) {
+      return res.status(409).json({
+        message: "Cannot delete player: they are assigned to one or more saved matches. Remove them from schedules (or delete those schedules) first."
+      });
+    }
+
     await pool.query("DELETE FROM players WHERE id = $1", [id]);
 
-    const { rows } = await pool.query(
+    const { rows: players } = await pool.query(
       "SELECT id, name, level, score FROM players ORDER BY id ASC"
     );
-    res.json(rows);
+    res.json(players);
   } catch (err) {
     sendServerError(res, "DELETE /players/:id", err);
   }
@@ -188,7 +203,6 @@ app.post("/schedule", async (req, res) => {
     for (const levelPlayers of Object.values(levels)) {
       if (levelPlayers.length < 2) continue;
 
-      // Pairings with ids + names
       const rr = [];
       for (let i = 0; i < levelPlayers.length; i++) {
         for (let j = i + 1; j < levelPlayers.length; j++) {
@@ -230,7 +244,7 @@ app.post("/schedule", async (req, res) => {
         [
           scheduleId,
           matchKey,
-          m.date, // YYYY-MM-DD
+          m.date,
           Number(m.level),
           Number(m.player1_id),
           Number(m.player2_id),
@@ -336,7 +350,6 @@ app.delete("/schedules/:id", async (req, res) => {
   }
 });
 
-// Save/overwrite entire schedule (Save Schedule button)
 app.put("/schedules/:id", async (req, res) => {
   const client = await pool.connect();
 
