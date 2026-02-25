@@ -301,8 +301,11 @@ app.delete("/schedules/:id", async (req, res) => {
 });
 
 // -------------------- Generate + save schedule --------------------
-app.post("/schedule", async (req, res) => {
-  const client = await pool.connect();
+	app.post("/schedule", async (req, res) => {
+	  const client = await pool.connect();
+	  client.on("error", (err) => {
+		console.error("PG client error (POST /schedule):", err.message);
+	  });
 
   try {
     await client.query("BEGIN");
@@ -362,8 +365,11 @@ app.post("/schedule", async (req, res) => {
 });
 
 // -------------------- Save/overwrite entire schedule --------------------
-app.put("/schedules/:id", async (req, res) => {
-  const client = await pool.connect();
+	app.put("/schedules/:id", async (req, res) => {
+	  const client = await pool.connect();
+	  client.on("error", (err) => {
+		console.error("PG client error (PUT /schedules/:id):", err.message);
+	  });
 
   try {
     const { id } = req.params;
