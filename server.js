@@ -57,14 +57,19 @@ pool.on("error", (err) => {
 
 // Warm-up ping (helps cold starts)
 (async () => {
-  try {
-    await pool.query("SELECT 1");
-    console.log("✅ DB connected (startup ping ok)");
-  } catch (e) {
-    console.error("❌ DB startup ping failed:", e.message);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("✅ DB connected (startup ping ok)");
+      return;
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${msg}`);
+      await new Promise(r => setTimeout(r, 800 * attempt)); // backoff
+    }
   }
+  console.warn("⚠️ DB startup ping failed after retries (app may still connect on first request).");
 })();
-
 // -------------------- Small utilities --------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
