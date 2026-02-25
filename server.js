@@ -343,7 +343,7 @@ app.delete("/schedules/:id", async (req, res) => {
   }
 });
 
-// -------------------- Generate + save schedule --------------------
+// -------------------- Generate + save schedule (FAST: bulk insert) --------------------
 app.post("/schedule", async (req, res) => {
   const client = await connectWithRetry();
 
@@ -359,37 +359,61 @@ app.post("/schedule", async (req, res) => {
     const scheduleId = scheduleInsert.rows[0].id;
     const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
 
+    // Build rows to insert
     let idx = 0;
+    const rowsToInsert = [];
 
-    // NOTE: still row-by-row insert; if you want speed, we can batch insert next
     for (const levelPlayers of Object.values(levels)) {
-      if (levelPlayers.length < 2) continue;
+      if (!levelPlayers || levelPlayers.length < 2) continue;
 
       const scheduled = scheduleWeeklyRounds(levelPlayers);
 
       for (const m of scheduled) {
-        const matchKey = `${scheduleId}-${idx++}`;
+        rowsToInsert.push({
+          schedule_id: scheduleId,
+          match_key: `${scheduleId}-${idx++}`,
+          match_date: m.date,                 // 'YYYY-MM-DD'
+          level: Number(m.level),
+          player1_id: m.player1_id ?? null,
+          player2_id: m.player2_id ?? null,
+          status: "scheduled",
+          result: null,
+          notes: m.isBye ? "BYE" : "",
+        });
+      }
+    }
 
-        await client.query(
-          `
-          INSERT INTO matches
-            (schedule_id, match_key, match_date, level, player1_id, player2_id, status, result, notes)
-          VALUES
-            ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-          `,
-          [
-            scheduleId,
-            matchKey,
-            m.date,
-            Number(m.level),
-            m.player1_id ?? null,
-            m.player2_id ?? null,
-            "scheduled",
-            null,
-            m.isBye ? "BYE" : "",
-          ]
+    // If no matches, still commit schedule header (optional behavior)
+    if (rowsToInsert.length > 0) {
+      // Build one INSERT with parameter placeholders
+      const values = [];
+      const params = [];
+      let p = 1;
+
+      for (const r of rowsToInsert) {
+        values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+        params.push(
+          r.schedule_id,
+          r.match_key,
+          r.match_date,
+          r.level,
+          r.player1_id,
+          r.player2_id,
+          r.status,
+          r.result,
+          r.notes
         );
       }
+
+      await client.query(
+        `
+        INSERT INTO matches
+          (schedule_id, match_key, match_date, level, player1_id, player2_id, status, result, notes)
+        VALUES
+          ${values.join(",")}
+        `,
+        params
+      );
     }
 
     await client.query("COMMIT");
@@ -419,6 +443,7 @@ app.put("/schedules/:id", async (req, res) => {
     }
 
     await client.query("BEGIN");
+	await client.query("SET LOCAL statement_timeout = '30s'");
 
     const sched = await client.query("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
     if (sched.rows.length === 0) {
