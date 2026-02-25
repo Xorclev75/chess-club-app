@@ -438,3 +438,21 @@ app.delete("/schedules/:id", async (req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
 });
+
+app.use((err, req, res, next) => {
+  console.error("Unhandled express error:", err);
+  res.status(500).json({ message: "Server error" });
+});
+
+function sendServerError(res, route, err) {
+  const code = err?.code || null;
+  const message = err?.message || String(err);
+  console.error(`${route} failed${code ? ` (${code})` : ""}:`, message);
+
+  // TEMP DEBUG: send details back so you can see what's failing on Render
+  return res.status(500).json({
+    message: "Server error",
+    code,
+    detail: message,
+  });
+}
