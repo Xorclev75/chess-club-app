@@ -9,7 +9,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 
-const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
+const { scheduleWeeklyRounds } = require("./logic/roundRobin");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -176,9 +176,8 @@ app.get("/schedule", async (req, res) => {
     let fullSchedule = [];
     for (const levelPlayers of Object.values(levels)) {
       if (levelPlayers.length < 2) continue;
-
-      const matches = generateRoundRobin(levelPlayers);
-      const scheduled = scheduleMatches(matches);
+      
+      const scheduled = scheduleWeeklyRounds(levelPlayers);
       fullSchedule = fullSchedule.concat(scheduled);
     }
 
