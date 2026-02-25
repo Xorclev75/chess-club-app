@@ -53,8 +53,8 @@ const pool = new Pool({
   ...poolConfig,
   ssl: { rejectUnauthorized: false },
 
-  // Supabase pooler + Render = keep this small & forgiving
-  max: Number(process.env.PG_POOL_MAX || 3),
+	// Supabase pooler + Render = keep this small & forgiving
+	max: Number(process.env.PG_POOL_MAX || 3),
   idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
   connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
 
@@ -64,6 +64,14 @@ const pool = new Pool({
 
 pool.on("error", (err) => {
   console.error("🔥 PG pool error:", err.message);
+});
+
+console.log("DB config:", {
+  using: hasPGVars ? "PG* vars" : "DATABASE_URL",
+  host: poolConfig.host || "(from connectionString)",
+  port: poolConfig.port || "(from connectionString)",
+  database: poolConfig.database || "(from connectionString)",
+  user: poolConfig.user || "(from connectionString)",
 });
 
 // -------------------- Utilities / helpers --------------------
@@ -210,6 +218,21 @@ app.get("/db-test", async (req, res) => {
     res.json({ success: true, timeFromDatabase: result.rows[0].now });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/db-whoami", async (req, res) => {
+  try {
+    const r = await queryWithRetry(`
+      SELECT
+        current_database() as db,
+        current_user as user,
+        inet_server_addr()::text as server_addr,
+        inet_server_port() as server_port
+    `);
+    res.json(r.rows[0]);
+  } catch (err) {
+    sendServerError(res, "GET /db-whoami", err);
   }
 });
 
