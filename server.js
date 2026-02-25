@@ -50,11 +50,6 @@ const pool = new Pool({
   keepAliveInitialDelayMillis: 10000,
 });
 
-//Remove after first attempt
-const { URL } = require("url");
-const u = new URL(process.env.DATABASE_URL);
-console.log("DB target:", { host: u.hostname, port: u.port, db: u.pathname, user: u.username });
-
 // Optional: surface pool errors (helps debugging)
 pool.on("error", (err) => {
   console.error("🔥 Unexpected PG pool error:", err.message);
@@ -425,23 +420,6 @@ app.put("/schedules/:id", async (req, res) => {
     sendServerError(res, "PUT /schedules/:id", err);
   } finally {
     client.release();
-  }
-});
-
-//Delete this
-app.get("/db-schema-check", async (req, res) => {
-  try {
-    const r = await queryWithRetry(`
-      SELECT column_name, is_nullable
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'matches'
-        AND column_name IN ('player1_id','player2_id')
-      ORDER BY column_name;
-    `);
-    res.json(r.rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
 });
 
