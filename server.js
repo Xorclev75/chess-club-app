@@ -1,4 +1,4 @@
-// server.js (Render/Postgres/Supabase pooler friendly)
+// server.js (Render/Postgres/Supabase friendly)
 "use strict";
 
 require("dotenv").config();
@@ -16,7 +16,6 @@ const { scheduleWeeklyRounds } = require("./logic/roundRobin");
 // -------------------- App --------------------
 const app = express();
 const PORT = process.env.PORT || 10000;
-const isProd = process.env.NODE_ENV === "production";
 
 // -------------------- Middleware --------------------
 app.use(cors());
@@ -24,53 +23,50 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// -------------------- Env guard (fail fast) --------------------
-if (!process.env.DATABASE_URL) {
-  console.error("❌ Missing DATABASE_URL env var. Server cannot connect to Postgres.");
-  // Failing fast is better than timing out on every request
+// -------------------- Env guard --------------------
+const hasPGVars =
+  process.env.PGHOST &&
+  process.env.PGPORT &&
+  process.env.PGDATABASE &&
+  process.env.PGUSER &&
+  process.env.PGPASSWORD;
+
+if (!process.env.DATABASE_URL && !hasPGVars) {
+  console.error("❌ Missing DATABASE_URL or PG* env vars. Server cannot connect to Postgres.");
   process.exit(1);
 }
 
 // -------------------- Postgres Pool (ONE pool) --------------------
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL, // or omit if using PG* vars
-  host: process.env.PGHOST,
-  port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
-  database: process.env.PGDATABASE,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
+const poolConfig = hasPGVars
+  ? {
+      host: process.env.PGHOST,
+      port: Number(process.env.PGPORT),
+      database: process.env.PGDATABASE,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+    }
+  : {
+      connectionString: process.env.DATABASE_URL,
+    };
 
+const pool = new Pool({
+  ...poolConfig,
   ssl: { rejectUnauthorized: false },
 
-  max: 1,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 30000,
+  // Supabase pooler + Render = keep this small & forgiving
+  max: Number(process.env.PG_POOL_MAX || 1),
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
 
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000,
 });
 
-// Optional: surface pool errors (helps debugging)
 pool.on("error", (err) => {
-  console.error("🔥 Unexpected PG pool error:", err.message);
+  console.error("🔥 PG pool error:", err.message);
 });
 
-// Warm-up ping (helps cold starts)
-(async () => {
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      await pool.query("SELECT 1");
-      console.log("✅ DB connected (startup ping ok)");
-      return;
-    } catch (e) {
-      const msg = e?.message || String(e);
-      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${msg}`);
-      await new Promise(r => setTimeout(r, 800 * attempt)); // backoff
-    }
-  }
-  console.warn("⚠️ DB startup ping failed after retries (app may still connect on first request).");
-})();
-// -------------------- Small utilities --------------------
+// -------------------- Utilities / helpers --------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function formatDateCA(d) {
@@ -82,13 +78,20 @@ function formatDateCA(d) {
 }
 
 function sendServerError(res, route, err) {
-  const code = err?.code ? ` (${err.code})` : "";
-  console.error(`${route} failed${code}:`, err?.message || err);
-  return res.status(500).json({ message: "Server error" });
+  const code = err?.code || null;
+  const message = err?.message || String(err);
+  console.error(`${route} failed${code ? ` (${code})` : ""}:`, message);
+
+  // Keep details during debugging (you can remove detail later)
+  return res.status(500).json({
+    message: "Server error",
+    code,
+    detail: message,
+  });
 }
 
-// Retry wrapper for transient pool/network issues
-async function queryWithRetry(text, params = [], attempts = 2) {
+// Retry wrapper for transient query issues
+async function queryWithRetry(text, params = [], attempts = 3) {
   try {
     return await pool.query(text, params);
   } catch (err) {
@@ -102,10 +105,51 @@ async function queryWithRetry(text, params = [], attempts = 2) {
 
     if (!transient || attempts <= 1) throw err;
 
-    await sleep(400);
+    await sleep(500);
     return queryWithRetry(text, params, attempts - 1);
   }
 }
+
+// Retry wrapper for getting a dedicated client (transactions)
+async function connectWithRetry(attempts = 4) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const client = await pool.connect();
+
+      // Prevent unhandled client 'error' event from crashing Node
+      client.on("error", (err) => {
+        console.error("PG client error:", err.message);
+      });
+
+      return client;
+    } catch (err) {
+      const msg = String(err?.message || "").toLowerCase();
+      const transient =
+        err?.code === "ETIMEDOUT" ||
+        msg.includes("timeout") ||
+        msg.includes("terminated") ||
+        msg.includes("connection");
+
+      if (!transient || i === attempts) throw err;
+      await sleep(700 * i);
+    }
+  }
+}
+
+// Warm-up ping (helps cold starts)
+(async () => {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("✅ DB connected (startup ping ok)");
+      return;
+    } catch (e) {
+      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${e.message}`);
+      await sleep(800 * attempt);
+    }
+  }
+  console.warn("⚠️ DB startup ping failed after retries (requests may still succeed).");
+})();
 
 // -------------------- Data helpers --------------------
 async function listPlayers() {
@@ -123,20 +167,16 @@ async function listSchedules() {
 }
 
 async function getPlayersByLevel(client) {
-  const db = client || pool;
-  const { rows } = await db.query(
+  const { rows } = await client.query(
     "SELECT id, name, level, score FROM players ORDER BY level ASC, name ASC"
   );
 
   const levels = {};
-  for (const p of rows) {
-    (levels[p.level] ||= []).push(p);
-  }
+  for (const p of rows) (levels[p.level] ||= []).push(p);
   return levels;
 }
 
 async function fetchScheduleMatches(scheduleId) {
-  // LEFT JOIN so BYE/null player IDs still render
   const { rows } = await queryWithRetry(
     `
     SELECT
@@ -161,7 +201,7 @@ async function fetchScheduleMatches(scheduleId) {
   return rows;
 }
 
-// -------------------- Health / DB test --------------------
+// -------------------- Health --------------------
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
 app.get("/db-test", async (req, res) => {
@@ -169,8 +209,17 @@ app.get("/db-test", async (req, res) => {
     const result = await queryWithRetry("SELECT NOW()");
     res.json({ success: true, timeFromDatabase: result.rows[0].now });
   } catch (err) {
-    console.error("DB TEST FAILED:", err?.message || err);
-    res.status(500).json({ success: false, error: err?.message || "DB error" });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Quick reachability check (helpful on Render)
+app.get("/db-health", async (req, res) => {
+  try {
+    await queryWithRetry("SELECT 1");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
@@ -229,7 +278,6 @@ app.put("/players/:id", async (req, res) => {
   }
 });
 
-// Prevent deleting a player used in saved matches
 app.delete("/players/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -257,7 +305,7 @@ app.delete("/players/:id", async (req, res) => {
   }
 });
 
-// -------------------- Schedules list --------------------
+// -------------------- Schedules --------------------
 app.get("/schedules", async (req, res) => {
   try {
     res.json(await listSchedules());
@@ -266,7 +314,6 @@ app.get("/schedules", async (req, res) => {
   }
 });
 
-// -------------------- Get one schedule --------------------
 app.get("/schedules/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -286,14 +333,10 @@ app.get("/schedules/:id", async (req, res) => {
   }
 });
 
-// -------------------- Delete schedule --------------------
 app.delete("/schedules/:id", async (req, res) => {
   try {
     const { id } = req.params;
-
-    // assumes matches has ON DELETE CASCADE on schedule_id FK
     await queryWithRetry("DELETE FROM schedules WHERE id = $1", [id]);
-
     res.json(await listSchedules());
   } catch (err) {
     sendServerError(res, "DELETE /schedules/:id", err);
@@ -301,11 +344,8 @@ app.delete("/schedules/:id", async (req, res) => {
 });
 
 // -------------------- Generate + save schedule --------------------
-	app.post("/schedule", async (req, res) => {
-	  const client = await pool.connect();
-	  client.on("error", (err) => {
-		console.error("PG client error (POST /schedule):", err.message);
-	  });
+app.post("/schedule", async (req, res) => {
+  const client = await connectWithRetry();
 
   try {
     await client.query("BEGIN");
@@ -315,11 +355,13 @@ app.delete("/schedules/:id", async (req, res) => {
     const scheduleInsert = await client.query(
       "INSERT INTO schedules (created_at) VALUES (CURRENT_DATE) RETURNING id, created_at"
     );
+
     const scheduleId = scheduleInsert.rows[0].id;
     const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
 
     let idx = 0;
 
+    // NOTE: still row-by-row insert; if you want speed, we can batch insert next
     for (const levelPlayers of Object.values(levels)) {
       if (levelPlayers.length < 2) continue;
 
@@ -365,11 +407,8 @@ app.delete("/schedules/:id", async (req, res) => {
 });
 
 // -------------------- Save/overwrite entire schedule --------------------
-	app.put("/schedules/:id", async (req, res) => {
-	  const client = await pool.connect();
-	  client.on("error", (err) => {
-		console.error("PG client error (PUT /schedules/:id):", err.message);
-	  });
+app.put("/schedules/:id", async (req, res) => {
+  const client = await connectWithRetry();
 
   try {
     const { id } = req.params;
@@ -434,25 +473,13 @@ app.delete("/schedules/:id", async (req, res) => {
   }
 });
 
+// -------------------- Express error handler --------------------
+app.use((err, req, res, next) => {
+  console.error("Unhandled express error:", err);
+  res.status(500).json({ message: "Server error", detail: err?.message || String(err) });
+});
+
 // -------------------- Start server --------------------
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
 });
-
-app.use((err, req, res, next) => {
-  console.error("Unhandled express error:", err);
-  res.status(500).json({ message: "Server error" });
-});
-
-function sendServerError(res, route, err) {
-  const code = err?.code || null;
-  const message = err?.message || String(err);
-  console.error(`${route} failed${code ? ` (${code})` : ""}:`, message);
-
-  // TEMP DEBUG: send details back so you can see what's failing on Render
-  return res.status(500).json({
-    message: "Server error",
-    code,
-    detail: message,
-  });
-}
