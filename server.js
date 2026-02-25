@@ -31,10 +31,45 @@ const { Pool } = require("pg");
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 5,                    // keep low on free tiers
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+
+  // keep it tiny on free tiers
+  max: 2,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+
+  // keep connections alive
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
+
+//DB Warm-Up Ping
+(async () => {
+  try {
+    await pool.query("SELECT 1");
+    console.log("DB connected (startup ping ok)");
+  } catch (e) {
+    console.error("DB startup ping failed:", e.message);
+  }
+})();
+
+//Retry wrapper
+async function queryWithRetry(text, params, attempts = 2) {
+  try {
+    return await pool.query(text, params);
+  } catch (err) {
+    const transient =
+      err.code === "ETIMEDOUT" ||
+      err.code === "ECONNRESET" ||
+      (err.message && err.message.toLowerCase().includes("connection terminated")) ||
+      (err.message && err.message.toLowerCase().includes("timeout"));
+
+    if (!transient || attempts <= 1) throw err;
+
+    // small backoff
+    await new Promise(r => setTimeout(r, 400));
+    return await queryWithRetry(text, params, attempts - 1);
+  }
+}
 
 // ---------- Helpers ----------
 function formatDateCA(d) {
@@ -99,7 +134,7 @@ app.post("/add-player", async (req, res) => {
 
 app.get("/players", async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await queryWithRetry(
       "SELECT id, name, level, score FROM players ORDER BY id ASC"
     );
     res.json(rows);
@@ -168,22 +203,15 @@ app.delete("/players/:id", async (req, res) => {
   }
 });
 
-// ---------- Schedule (preview only; does not save) ----------
-app.get("/schedule", async (req, res) => {
+// ---------- Schedules ----------
+app.get("/schedules", async (req, res) => {
   try {
-    const levels = await getPlayersByLevel();
-
-    let fullSchedule = [];
-    for (const levelPlayers of Object.values(levels)) {
-      if (levelPlayers.length < 2) continue;
-      
-      const scheduled = scheduleWeeklyRounds(levelPlayers);
-      fullSchedule = fullSchedule.concat(scheduled);
-    }
-
-    res.json(fullSchedule);
+    const { rows } = await queryWithRetry(
+      "SELECT id, created_at FROM schedules ORDER BY id ASC"
+    );
+    res.json(rows.map(r => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
   } catch (err) {
-    sendServerError(res, "GET /schedule", err);
+    sendServerError(res, "GET /schedules", err);
   }
 });
 
