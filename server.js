@@ -33,20 +33,27 @@ if (!process.env.DATABASE_URL) {
 
 // -------------------- Postgres Pool (ONE pool) --------------------
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  // On Render / managed Postgres, SSL is commonly required.
-  // For local dev, this avoids needing local SSL setup.
-  ssl: isProd ? { rejectUnauthorized: false } : false,
+  connectionString: process.env.DATABASE_URL, // or omit if using PG* vars
+  host: process.env.PGHOST,
+  port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
+  database: process.env.PGDATABASE,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
 
-  // Keep tiny on free tiers
-  max: Number(process.env.PG_POOL_MAX || 2),
-  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-  connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 10000),
+  ssl: { rejectUnauthorized: false },
 
-  // Keep alive
+  max: 2,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000,
+
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000,
 });
+
+//Remove after first attempt
+const { URL } = require("url");
+const u = new URL(process.env.DATABASE_URL);
+console.log("DB target:", { host: u.hostname, port: u.port, db: u.pathname, user: u.username });
 
 // Optional: surface pool errors (helps debugging)
 pool.on("error", (err) => {
