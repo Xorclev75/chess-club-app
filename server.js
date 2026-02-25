@@ -54,7 +54,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 
   // Supabase pooler + Render = keep this small & forgiving
-  max: Number(process.env.PG_POOL_MAX || 1),
+  max: Number(process.env.PG_POOL_MAX || 3),
   idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
   connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
 
@@ -349,9 +349,12 @@ app.post("/schedule", async (req, res) => {
 
   try {
     await client.query("BEGIN");
+    // Optional: make this transaction fail fast if something truly hangs
+    await client.query("SET LOCAL statement_timeout = '30s'");
 
     const levels = await getPlayersByLevel(client);
 
+    // Create schedule header
     const scheduleInsert = await client.query(
       "INSERT INTO schedules (created_at) VALUES (CURRENT_DATE) RETURNING id, created_at"
     );
@@ -359,7 +362,7 @@ app.post("/schedule", async (req, res) => {
     const scheduleId = scheduleInsert.rows[0].id;
     const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
 
-    // Build rows to insert
+    // Build all match rows in memory
     let idx = 0;
     const rowsToInsert = [];
 
@@ -369,40 +372,29 @@ app.post("/schedule", async (req, res) => {
       const scheduled = scheduleWeeklyRounds(levelPlayers);
 
       for (const m of scheduled) {
-        rowsToInsert.push({
-          schedule_id: scheduleId,
-          match_key: `${scheduleId}-${idx++}`,
-          match_date: m.date,                 // 'YYYY-MM-DD'
-          level: Number(m.level),
-          player1_id: m.player1_id ?? null,
-          player2_id: m.player2_id ?? null,
-          status: "scheduled",
-          result: null,
-          notes: m.isBye ? "BYE" : "",
-        });
+        rowsToInsert.push([
+          scheduleId,                      // schedule_id
+          `${scheduleId}-${idx++}`,        // match_key
+          m.date,                          // match_date (YYYY-MM-DD)
+          Number(m.level),                 // level
+          m.player1_id ?? null,            // player1_id (nullable for BYE)
+          m.player2_id ?? null,            // player2_id (nullable for BYE)
+          "scheduled",                     // status
+          null,                            // result
+          m.isBye ? "BYE" : "",            // notes
+        ]);
       }
     }
 
-    // If no matches, still commit schedule header (optional behavior)
+    // Insert matches in one SQL call
     if (rowsToInsert.length > 0) {
-      // Build one INSERT with parameter placeholders
       const values = [];
       const params = [];
       let p = 1;
 
-      for (const r of rowsToInsert) {
+      for (const row of rowsToInsert) {
         values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-        params.push(
-          r.schedule_id,
-          r.match_key,
-          r.match_date,
-          r.level,
-          r.player1_id,
-          r.player2_id,
-          r.status,
-          r.result,
-          r.notes
-        );
+        params.push(...row);
       }
 
       await client.query(
@@ -418,6 +410,7 @@ app.post("/schedule", async (req, res) => {
 
     await client.query("COMMIT");
 
+    // Return the schedule
     const matches = await fetchScheduleMatches(scheduleId);
     res.json({ id: scheduleId, createdAt, matches });
   } catch (err) {
