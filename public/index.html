@@ -432,19 +432,29 @@
     btnPrint?.addEventListener("click", () => window.print());
     btnSaveSchedule?.addEventListener("click", saveSchedule);
 
-    async function generateSchedule() {
-      try {
-        // Ensure roster is current before scheduling
-        await loadPlayers();
+   async function generateSchedule() {
+  try {
+    // optional but helpful so the edit dropdowns have latest roster
+    await loadPlayers();
 
-        const newSchedule = await api("/schedule", { method: "POST" });
-        renderSchedule(newSchedule);
-        await loadSchedules({ keepCurrent: true });
-      } catch (err) {
-        console.error(err);
-        alert("Generate schedule failed. Check console/logs.");
-      }
-    }
+    const newSchedule = await api("/schedule", { method: "POST" });
+
+    // Show the schedule immediately
+    renderSchedule(newSchedule);
+
+    // Add it to the schedules list immediately (no refresh required)
+    addScheduleToList({ id: newSchedule.id, createdAt: newSchedule.createdAt }, { prepend: true });
+
+    // Scroll to the schedule area
+    document.getElementById("printArea")?.scrollIntoView({ behavior: "smooth" });
+
+    // Optional: refresh list from server (safe even if it fails)
+    loadSchedules({ keepCurrent: true }).catch(() => {});
+  } catch (err) {
+    console.error(err);
+    alert("Generate schedule failed. Check console/logs.");
+  }
+}
 
     async function loadSchedules({ keepCurrent = false } = {}) {
       try {
@@ -471,6 +481,28 @@
           li.appendChild(deleteBtn);
           scheduleList.appendChild(li);
         });
+		
+		//Schedule helper
+		function addScheduleToList(s, { prepend = false } = {}) {
+  const li = document.createElement("li");
+  li.textContent = `Schedule ${s.createdAt} `;
+
+  const viewBtn = document.createElement("button");
+  viewBtn.textContent = "View";
+  viewBtn.className = "admin-btn";
+  viewBtn.addEventListener("click", () => viewSchedule(s.id));
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.textContent = "Delete";
+  deleteBtn.className = "admin-btn btn-danger";
+  deleteBtn.addEventListener("click", () => deleteSchedule(s.id, deleteBtn));
+
+  li.appendChild(viewBtn);
+  li.appendChild(deleteBtn);
+
+  if (prepend && scheduleList.firstChild) scheduleList.insertBefore(li, scheduleList.firstChild);
+  else scheduleList.appendChild(li);
+}
 
         // Only auto-load a schedule if we aren't editing unsaved changes
         if (!keepCurrent && !scheduleDirty) {
