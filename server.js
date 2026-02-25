@@ -428,6 +428,23 @@ app.put("/schedules/:id", async (req, res) => {
   }
 });
 
+//Delete this
+app.get("/db-schema-check", async (req, res) => {
+  try {
+    const r = await queryWithRetry(`
+      SELECT column_name, is_nullable
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'matches'
+        AND column_name IN ('player1_id','player2_id')
+      ORDER BY column_name;
+    `);
+    res.json(r.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // -------------------- Start server --------------------
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
