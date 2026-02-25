@@ -6,6 +6,13 @@ require("dotenv").config();
 const dns = require("dns");
 dns.setDefaultResultOrder("ipv4first"); // helps IPv6 routing issues on some hosts (Render free tier)
 
+const net = require("net");
+
+const ipv4Lookup = (hostname, options, cb) => {
+  // Force IPv4 only
+  return dns.lookup(hostname, { family: 4 }, cb);
+};
+
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
