@@ -647,7 +647,7 @@
       await loadPlayers();
       await loadSchedules();
     });
-=======
+
 
     // ---------- Global state ----------
     let currentSchedule = null;
