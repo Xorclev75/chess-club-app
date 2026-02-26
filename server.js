@@ -1,4 +1,4 @@
-// server.js (Render/Postgres/Supabase friendly) — IPv4-safe, ONE pool, copy/paste
+// server.js (Render/Postgres/Supabase friendly) — IPv4-safe, ONE pool
 "use strict";
 
 require("dotenv").config();
@@ -60,11 +60,9 @@ function sendServerError(res, route, err) {
   });
 }
 
+// -------------------- IPv4 resolver --------------------
 async function resolveIPv4(hostname) {
-  // If it's already an IP (v4 or v6), just return it
-  if (net.isIP(hostname)) return hostname;
-
-  // FORCE_IPV4 defaults to true (you can set FORCE_IPV4=0 to disable)
+  if (net.isIP(hostname)) return hostname; // already an IP (v4 or v6)
   if (String(process.env.FORCE_IPV4 ?? "1") === "0") return hostname;
 
   try {
@@ -77,97 +75,67 @@ async function resolveIPv4(hostname) {
 }
 
 // -------------------- Postgres Pool (ONE pool) --------------------
-let pool; // initialized in initDb()
+let pool; // initialized in initPool()
 
-async function initDb() {
-  // Build config from either PG* or DATABASE_URL, then hard-resolve host to IPv4
-  let poolConfig = null;
-  let logConfig = null;
-
+async function initPool() {
   if (hasPGVars) {
-    const originalHost = process.env.PGHOST;
-    const resolvedHost = await resolveIPv4(originalHost);
+    const hostResolved = await resolveIPv4(process.env.PGHOST);
 
-    poolConfig = {
-      host: resolvedHost,
+    pool = new Pool({
+      host: hostResolved,
       port: Number(process.env.PGPORT),
       database: process.env.PGDATABASE,
       user: process.env.PGUSER,
       password: process.env.PGPASSWORD,
-    };
+      ssl: { rejectUnauthorized: false },
 
-    logConfig = {
+      max: Number(process.env.PG_POOL_MAX || 3),
+      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+      connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 60000),
+
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+    });
+
+    console.log("DB config:", {
       using: "PG* vars",
-      hostOriginal: originalHost,
-      hostResolved: resolvedHost,
-      port: poolConfig.port,
-      database: poolConfig.database,
-      user: poolConfig.user,
-    };
+      hostOriginal: process.env.PGHOST,
+      hostResolved,
+      port: Number(process.env.PGPORT),
+      database: process.env.PGDATABASE,
+      user: process.env.PGUSER,
+    });
   } else {
-    // Parse DATABASE_URL so we can replace hostname with resolved IPv4
+    // Preserve all params (?sslmode=, ?pgbouncer=, etc), just swap host
     const u = new URL(process.env.DATABASE_URL);
+    const hostResolved = await resolveIPv4(u.hostname);
+    u.hostname = hostResolved;
 
-    const originalHost = u.hostname;
-    const resolvedHost = await resolveIPv4(originalHost);
+    pool = new Pool({
+      connectionString: u.toString(),
+      ssl: { rejectUnauthorized: false },
 
-    // URL decoding for user/pass (URL can contain %xx)
-    const user = decodeURIComponent(u.username || "");
-    const password = decodeURIComponent(u.password || "");
-    const database = (u.pathname || "").replace(/^\//, "");
-    const port = Number(u.port || 5432);
+      max: Number(process.env.PG_POOL_MAX || 3),
+      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+      connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 60000),
 
-    poolConfig = {
-      host: resolvedHost,
-      port,
-      database,
-      user,
-      password,
-      // If you need extras from the URL (rare), you can read u.searchParams here.
-    };
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+    });
 
-    logConfig = {
+    console.log("DB config:", {
       using: "DATABASE_URL",
-      hostOriginal: originalHost,
-      hostResolved: resolvedHost,
-      port,
-      database,
-      user,
-    };
+      hostOriginal: new URL(process.env.DATABASE_URL).hostname,
+      hostResolved,
+      note: "connectionString preserved",
+    });
   }
 
-  pool = new Pool({
-    ...poolConfig,
-    ssl: { rejectUnauthorized: false },
+  pool.on("error", (err) => console.error("🔥 PG pool error:", err.message));
 
-    // Supabase pooler + Render = keep this small & forgiving
-    max: Number(process.env.PG_POOL_MAX || 3),
-    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
-
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10000,
-  });
-
-  pool.on("error", (err) => {
-    console.error("🔥 PG pool error:", err.message);
-  });
-
-  console.log("DB config:", logConfig);
-
-  // Warm-up ping (helps cold starts)
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      await pool.query("SELECT 1");
-      console.log("✅ DB connected (startup ping ok)");
-      return;
-    } catch (e) {
-      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${e.message}`);
-      await sleep(800 * attempt);
-    }
-  }
-
-  console.warn("⚠️ DB startup ping failed after retries (requests may still succeed).");
+  // warm-up
+  await pool.query("SELECT 1");
+  console.log("✅ DB connected (startup ping ok)");
 }
 
 // Retry wrapper for transient query issues
@@ -191,16 +159,11 @@ async function queryWithRetry(text, params = [], attempts = 3) {
   }
 }
 
-// Retry wrapper for getting a dedicated client (transactions)
 async function connectWithRetry(attempts = 4) {
   for (let i = 1; i <= attempts; i++) {
     try {
       const client = await pool.connect();
-
-      client.on("error", (err) => {
-        console.error("PG client error:", err.message);
-      });
-
+      client.on("error", (err) => console.error("PG client error:", err.message));
       return client;
     } catch (err) {
       const msg = String(err?.message || "").toLowerCase();
@@ -217,366 +180,17 @@ async function connectWithRetry(attempts = 4) {
   }
 }
 
-// -------------------- Data helpers --------------------
-async function listPlayers() {
-  const { rows } = await queryWithRetry(
-    "SELECT id, name, level, score FROM players ORDER BY id ASC"
-  );
-  return rows;
-}
-
-async function listSchedules() {
-  const { rows } = await queryWithRetry(
-    "SELECT id, created_at FROM schedules ORDER BY id ASC"
-  );
-  return rows.map((r) => ({ id: r.id, createdAt: formatDateCA(r.created_at) }));
-}
-
-async function getPlayersByLevel(client) {
-  const { rows } = await client.query(
-    "SELECT id, name, level, score FROM players ORDER BY level ASC, name ASC"
-  );
-
-  const levels = {};
-  for (const p of rows) (levels[p.level] ||= []).push(p);
-  return levels;
-}
-
-async function fetchScheduleMatches(scheduleId) {
-  const { rows } = await queryWithRetry(
-    `
-    SELECT
-      m.match_key                               AS "matchId",
-      to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
-      m.level                                   AS "level",
-      COALESCE(p1.name, 'BYE')                  AS "player1",
-      COALESCE(p2.name, 'BYE')                  AS "player2",
-      m.player1_id                              AS "player1Id",
-      m.player2_id                              AS "player2Id",
-      m.status                                  AS "status",
-      m.result                                  AS "result",
-      m.notes                                   AS "notes"
-    FROM matches m
-    LEFT JOIN players p1 ON p1.id = m.player1_id
-    LEFT JOIN players p2 ON p2.id = m.player2_id
-    WHERE m.schedule_id = $1
-    ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
-    `,
-    [scheduleId]
-  );
-  return rows;
-}
-
-// -------------------- Health --------------------
-app.get("/health", (req, res) => res.status(200).send("ok"));
-
-app.get("/db-test", async (req, res) => {
-  try {
-    const result = await queryWithRetry("SELECT NOW()");
-    res.json({ success: true, timeFromDatabase: result.rows[0].now });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get("/db-whoami", async (req, res) => {
-  try {
-    const r = await queryWithRetry(`
-      SELECT
-        current_database() as db,
-        current_user as user,
-        inet_server_addr()::text as server_addr,
-        inet_server_port() as server_port
-    `);
-    res.json(r.rows[0]);
-  } catch (err) {
-    sendServerError(res, "GET /db-whoami", err);
-  }
-});
-
-app.get("/db-health", async (req, res) => {
-  try {
-    await queryWithRetry("SELECT 1");
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// -------------------- Players --------------------
-app.get("/players", async (req, res) => {
-  try {
-    res.json(await listPlayers());
-  } catch (err) {
-    sendServerError(res, "GET /players", err);
-  }
-});
-
-app.post("/add-player", async (req, res) => {
-  try {
-    const { name, level } = req.body;
-    if (!name || level === undefined || level === null) {
-      return res.status(400).json({ message: "Name and level are required" });
-    }
-
-    await queryWithRetry(
-      "INSERT INTO players (name, level, score) VALUES ($1, $2, 0)",
-      [String(name).trim(), Number(level)]
-    );
-
-    res.json(await listPlayers());
-  } catch (err) {
-    sendServerError(res, "POST /add-player", err);
-  }
-});
-
-app.put("/players/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, level, score } = req.body;
-
-    const { rows: existingRows } = await queryWithRetry(
-      "SELECT id, name, level, score FROM players WHERE id = $1",
-      [id]
-    );
-    if (existingRows.length === 0) return res.status(404).json({ message: "Player not found" });
-
-    const existing = existingRows[0];
-
-    const newName = name ?? existing.name;
-    const newLevel = level !== undefined ? Number(level) : existing.level;
-    const newScore = score !== undefined ? Number(score) : Number(existing.score ?? 0);
-
-    await queryWithRetry(
-      "UPDATE players SET name = $1, level = $2, score = $3 WHERE id = $4",
-      [newName, newLevel, newScore, id]
-    );
-
-    res.json(await listPlayers());
-  } catch (err) {
-    sendServerError(res, "PUT /players/:id", err);
-  }
-});
-
-app.delete("/players/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { rows } = await queryWithRetry(
-      `
-      SELECT COUNT(*)::int AS cnt
-      FROM matches
-      WHERE player1_id = $1 OR player2_id = $1
-      `,
-      [id]
-    );
-
-    if (rows[0].cnt > 0) {
-      return res.status(409).json({
-        message:
-          "Cannot delete player: they are assigned to one or more saved matches. Remove them from schedules (or delete those schedules) first.",
-      });
-    }
-
-    await queryWithRetry("DELETE FROM players WHERE id = $1", [id]);
-    res.json(await listPlayers());
-  } catch (err) {
-    sendServerError(res, "DELETE /players/:id", err);
-  }
-});
-
-// -------------------- Schedules --------------------
-app.get("/schedules", async (req, res) => {
-  try {
-    res.json(await listSchedules());
-  } catch (err) {
-    sendServerError(res, "GET /schedules", err);
-  }
-});
-
-app.get("/schedules/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const sched = await queryWithRetry("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
-    if (sched.rows.length === 0) return res.status(404).json({ message: "Schedule not found" });
-
-    const matches = await fetchScheduleMatches(id);
-
-    res.json({
-      id: Number(sched.rows[0].id),
-      createdAt: formatDateCA(sched.rows[0].created_at),
-      matches,
-    });
-  } catch (err) {
-    sendServerError(res, "GET /schedules/:id", err);
-  }
-});
-
-app.delete("/schedules/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    await queryWithRetry("DELETE FROM schedules WHERE id = $1", [id]);
-    res.json(await listSchedules());
-  } catch (err) {
-    sendServerError(res, "DELETE /schedules/:id", err);
-  }
-});
-
-// -------------------- Generate + save schedule (FAST: bulk insert) --------------------
-app.post("/schedule", async (req, res) => {
-  const client = await connectWithRetry();
-
-  try {
-    await client.query("BEGIN");
-    await client.query("SET LOCAL statement_timeout = '30s'");
-
-    const levels = await getPlayersByLevel(client);
-
-    const scheduleInsert = await client.query(
-      "INSERT INTO schedules (created_at) VALUES (CURRENT_DATE) RETURNING id, created_at"
-    );
-
-    const scheduleId = scheduleInsert.rows[0].id;
-    const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
-
-    let idx = 0;
-    const rowsToInsert = [];
-
-    for (const levelPlayers of Object.values(levels)) {
-      if (!levelPlayers || levelPlayers.length < 2) continue;
-
-      const scheduled = scheduleWeeklyRounds(levelPlayers);
-
-      for (const m of scheduled) {
-        rowsToInsert.push([
-          scheduleId,
-          `${scheduleId}-${idx++}`,
-          m.date,
-          Number(m.level),
-          m.player1_id ?? null,
-          m.player2_id ?? null,
-          "scheduled",
-          null,
-          m.isBye ? "BYE" : "",
-        ]);
-      }
-    }
-
-    if (rowsToInsert.length > 0) {
-      const values = [];
-      const params = [];
-      let p = 1;
-
-      for (const row of rowsToInsert) {
-        values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
-        params.push(...row);
-      }
-
-      await client.query(
-        `
-        INSERT INTO matches
-          (schedule_id, match_key, match_date, level, player1_id, player2_id, status, result, notes)
-        VALUES
-          ${values.join(",")}
-        `,
-        params
-      );
-    }
-
-    await client.query("COMMIT");
-
-    const matches = await fetchScheduleMatches(scheduleId);
-    res.json({ id: scheduleId, createdAt, matches });
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (_) {}
-    sendServerError(res, "POST /schedule", err);
-  } finally {
-    client.release();
-  }
-});
-
-// -------------------- Save/overwrite entire schedule --------------------
-app.put("/schedules/:id", async (req, res) => {
-  const client = await connectWithRetry();
-
-  try {
-    const { id } = req.params;
-    const updated = req.body;
-
-    if (!updated?.matches || !Array.isArray(updated.matches)) {
-      return res.status(400).json({ message: "Invalid schedule payload" });
-    }
-
-    await client.query("BEGIN");
-    await client.query("SET LOCAL statement_timeout = '30s'");
-
-    const sched = await client.query("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
-    if (sched.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Schedule not found" });
-    }
-
-    for (const m of updated.matches) {
-      if (!m.matchId) continue;
-
-      await client.query(
-        `
-        UPDATE matches
-        SET
-          match_date = COALESCE($1, match_date),
-          status     = COALESCE($2, status),
-          result     = $3,
-          notes      = COALESCE($4, notes),
-          player1_id = $5,
-          player2_id = $6
-        WHERE schedule_id = $7 AND match_key = $8
-        `,
-        [
-          m.date ?? null,
-          m.status ?? null,
-          m.result ?? null,
-          m.notes ?? "",
-          m.player1Id ?? null,
-          m.player2Id ?? null,
-          id,
-          m.matchId,
-        ]
-      );
-    }
-
-    await client.query("COMMIT");
-
-    const matches = await fetchScheduleMatches(id);
-
-    res.json({
-      id: Number(id),
-      createdAt: formatDateCA(sched.rows[0].created_at),
-      matches,
-    });
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (_) {}
-    sendServerError(res, "PUT /schedules/:id", err);
-  } finally {
-    client.release();
-  }
-});
-
-// -------------------- Express error handler --------------------
-app.use((err, req, res, next) => {
-  console.error("Unhandled express error:", err);
-  res.status(500).json({ message: "Server error", detail: err?.message || String(err) });
-});
+// ---- keep all your routes/data helpers below this line exactly as you already have ----
 
 // -------------------- Start server (after DB init) --------------------
 (async () => {
-  await initDb();
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
-  });
+  try {
+    await initPool();
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
+    });
+  } catch (e) {
+    console.error("❌ Failed to init DB pool:", e.message);
+    process.exit(1);
+  }
 })();
