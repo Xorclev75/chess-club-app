@@ -1,45 +1,42 @@
-// server.js (Render/Postgres/Supabase friendly) — IPv4-safe, ONE pool
-"use strict";
-
+// server.js (Postgres version)
 require("dotenv").config();
 
 const dns = require("dns");
-dns.setDefaultResultOrder("ipv4first"); // helps, but we ALSO hard-resolve IPv4 below
+// Helps avoid IPv6 routing issues on some hosts (Render free tier)
+dns.setDefaultResultOrder("ipv4first");
 
-const net = require("net");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { Pool } = require("pg");
 
-const { scheduleWeeklyRounds } = require("./logic/roundRobin");
+const { generateRoundRobin, scheduleMatches } = require("./logic/roundRobin");
 
-// -------------------- App --------------------
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// -------------------- Middleware --------------------
+// ---------- Middleware ----------
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// -------------------- Env guard --------------------
-const hasPGVars =
-  process.env.PGHOST &&
-  process.env.PGPORT &&
-  process.env.PGDATABASE &&
-  process.env.PGUSER &&
-  process.env.PGPASSWORD;
-
-if (!process.env.DATABASE_URL && !hasPGVars) {
-  console.error("❌ Missing DATABASE_URL or PG* env vars. Server cannot connect to Postgres.");
-  process.exit(1);
+// ---------- Env guard ----------
+if (!process.env.DATABASE_URL) {
+  console.error("Missing DATABASE_URL env var.");
 }
 
-// -------------------- Utilities / helpers --------------------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ---------- Postgres pool (ONE pool only) ----------
+const { Pool } = require("pg");
 
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 5,                    // keep low on free tiers
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+});
+
+// ---------- Helpers ----------
 function formatDateCA(d) {
   const date = new Date(d);
   const yyyy = date.getFullYear();
@@ -49,148 +46,393 @@ function formatDateCA(d) {
 }
 
 function sendServerError(res, route, err) {
-  const code = err?.code || null;
-  const message = err?.message || String(err);
-  console.error(`${route} failed${code ? ` (${code})` : ""}:`, message);
-
-  return res.status(500).json({
-    message: "Server error",
-    code,
-    detail: message,
-  });
+  console.error(`${route} failed:`, err);
+  return res.status(500).json({ message: "Server error" });
 }
 
-// -------------------- IPv4 resolver --------------------
-async function resolveIPv4(hostname) {
-  if (net.isIP(hostname)) return hostname; // already an IP (v4 or v6)
-  if (String(process.env.FORCE_IPV4 ?? "1") === "0") return hostname;
+async function getPlayersByLevel(client = pool) {
+  const { rows } = await client.query(
+    "SELECT id, name, level, score FROM players ORDER BY level ASC, name ASC"
+  );
 
-  try {
-    const { address } = await dns.promises.lookup(hostname, { family: 4 });
-    return address; // numeric IPv4, avoids AAAA selection entirely
-  } catch (e) {
-    console.warn(`⚠️ IPv4 lookup failed for ${hostname}; using hostname as-is.`, e.message);
-    return hostname;
+  const levels = {};
+  for (const p of rows) {
+    if (!levels[p.level]) levels[p.level] = [];
+    levels[p.level].push(p);
   }
+  return levels;
 }
 
-// -------------------- Postgres Pool (ONE pool) --------------------
-let pool; // initialized in initPool()
+// ---------- Health ----------
+app.get("/health", (req, res) => res.status(200).send("ok"));
 
-async function initPool() {
-  if (hasPGVars) {
-    const hostResolved = await resolveIPv4(process.env.PGHOST);
-
-    pool = new Pool({
-      host: hostResolved,
-      port: Number(process.env.PGPORT),
-      database: process.env.PGDATABASE,
-      user: process.env.PGUSER,
-      password: process.env.PGPASSWORD,
-      ssl: { rejectUnauthorized: false },
-
-      max: Number(process.env.PG_POOL_MAX || 3),
-      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-      connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 60000),
-
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 10000,
-    });
-
-    console.log("DB config:", {
-      using: "PG* vars",
-      hostOriginal: process.env.PGHOST,
-      hostResolved,
-      port: Number(process.env.PGPORT),
-      database: process.env.PGDATABASE,
-      user: process.env.PGUSER,
-    });
-  } else {
-    // Preserve all params (?sslmode=, ?pgbouncer=, etc), just swap host
-    const u = new URL(process.env.DATABASE_URL);
-    const hostResolved = await resolveIPv4(u.hostname);
-    u.hostname = hostResolved;
-
-    pool = new Pool({
-      connectionString: u.toString(),
-      ssl: { rejectUnauthorized: false },
-
-      max: Number(process.env.PG_POOL_MAX || 3),
-      idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-      connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 60000),
-
-      keepAlive: true,
-      keepAliveInitialDelayMillis: 10000,
-    });
-
-    console.log("DB config:", {
-      using: "DATABASE_URL",
-      hostOriginal: new URL(process.env.DATABASE_URL).hostname,
-      hostResolved,
-      note: "connectionString preserved",
-    });
-  }
-
-  pool.on("error", (err) => console.error("🔥 PG pool error:", err.message));
-
-  // warm-up
-  await pool.query("SELECT 1");
-  console.log("✅ DB connected (startup ping ok)");
-}
-
-// Retry wrapper for transient query issues
-async function queryWithRetry(text, params = [], attempts = 3) {
+// ---------- DB test ----------
+app.get("/db-test", async (req, res) => {
   try {
-    return await pool.query(text, params);
+    const result = await pool.query("SELECT NOW()");
+    res.json({ success: true, timeFromDatabase: result.rows[0].now });
   } catch (err) {
-    const msg = String(err?.message || "").toLowerCase();
-    const transient =
-      err?.code === "ETIMEDOUT" ||
-      err?.code === "ECONNRESET" ||
-      err?.code === "ENETUNREACH" ||
-      msg.includes("connection terminated") ||
-      msg.includes("timeout") ||
-      msg.includes("terminated unexpectedly");
-
-    if (!transient || attempts <= 1) throw err;
-
-    await sleep(500);
-    return queryWithRetry(text, params, attempts - 1);
+    console.error("DB TEST FAILED:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
-}
+});
 
-async function connectWithRetry(attempts = 4) {
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      const client = await pool.connect();
-      client.on("error", (err) => console.error("PG client error:", err.message));
-      return client;
-    } catch (err) {
-      const msg = String(err?.message || "").toLowerCase();
-      const transient =
-        err?.code === "ETIMEDOUT" ||
-        err?.code === "ENETUNREACH" ||
-        msg.includes("timeout") ||
-        msg.includes("terminated") ||
-        msg.includes("connection");
-
-      if (!transient || i === attempts) throw err;
-      await sleep(700 * i);
-    }
-  }
-}
-
-// ---- keep all your routes/data helpers below this line exactly as you already have ----
-
-// -------------------- Start server (after DB init) --------------------
-(async () => {
+// ---------- Players ----------
+app.post("/add-player", async (req, res) => {
   try {
-    await initPool();
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
-    });
-  } catch (e) {
-    console.error("❌ Failed to init DB pool:", e.message);
-    process.exit(1);
+    const { name, level } = req.body;
+    if (!name || !level) return res.status(400).json({ message: "Name and level are required" });
+
+    await pool.query(
+      "INSERT INTO players (name, level, score) VALUES ($1, $2, 0)",
+      [name.trim(), Number(level)]
+    );
+
+    const { rows } = await pool.query(
+      "SELECT id, name, level, score FROM players ORDER BY id ASC"
+    );
+    res.json(rows);
+  } catch (err) {
+    sendServerError(res, "POST /add-player", err);
   }
-})();
+});
+
+app.get("/players", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, name, level, score FROM players ORDER BY id ASC"
+    );
+    res.json(rows);
+  } catch (err) {
+    sendServerError(res, "GET /players", err);
+  }
+});
+
+app.put("/players/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, level, score } = req.body;
+
+    const { rows: existingRows } = await pool.query(
+      "SELECT id, name, level, score FROM players WHERE id = $1",
+      [id]
+    );
+    if (existingRows.length === 0) return res.status(404).json({ message: "Player not found" });
+
+    const existing = existingRows[0];
+
+    const newName = name ?? existing.name;
+    const newLevel = level !== undefined ? Number(level) : existing.level;
+    const newScore = score !== undefined ? Number(score) : Number(existing.score ?? 0);
+
+    await pool.query(
+      "UPDATE players SET name = $1, level = $2, score = $3 WHERE id = $4",
+      [newName, newLevel, newScore, id]
+    );
+
+    const { rows } = await pool.query(
+      "SELECT id, name, level, score FROM players ORDER BY id ASC"
+    );
+    res.json(rows);
+  } catch (err) {
+    sendServerError(res, "PUT /players/:id", err);
+  }
+});
+
+// IMPORTANT: prevent deleting a player used in saved matches
+app.delete("/players/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM matches
+       WHERE player1_id = $1 OR player2_id = $1`,
+      [id]
+    );
+
+    if (rows[0].cnt > 0) {
+      return res.status(409).json({
+        message: "Cannot delete player: they are assigned to one or more saved matches. Remove them from schedules (or delete those schedules) first."
+      });
+    }
+
+    await pool.query("DELETE FROM players WHERE id = $1", [id]);
+
+    const { rows: players } = await pool.query(
+      "SELECT id, name, level, score FROM players ORDER BY id ASC"
+    );
+    res.json(players);
+  } catch (err) {
+    sendServerError(res, "DELETE /players/:id", err);
+  }
+});
+
+// ---------- Schedule (preview only; does not save) ----------
+app.get("/schedule", async (req, res) => {
+  try {
+    const levels = await getPlayersByLevel();
+
+    let fullSchedule = [];
+    for (const levelPlayers of Object.values(levels)) {
+      if (levelPlayers.length < 2) continue;
+
+      const matches = generateRoundRobin(levelPlayers);
+      const scheduled = scheduleMatches(matches);
+      fullSchedule = fullSchedule.concat(scheduled);
+    }
+
+    res.json(fullSchedule);
+  } catch (err) {
+    sendServerError(res, "GET /schedule", err);
+  }
+});
+
+// ---------- Schedule (generate + save) ----------
+app.post("/schedule", async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const levels = await getPlayersByLevel(client);
+
+    let matches = [];
+    for (const levelPlayers of Object.values(levels)) {
+      if (levelPlayers.length < 2) continue;
+
+      const rr = [];
+      for (let i = 0; i < levelPlayers.length; i++) {
+        for (let j = i + 1; j < levelPlayers.length; j++) {
+          rr.push({
+            player1: levelPlayers[i].name,
+            player2: levelPlayers[j].name,
+            player1_id: levelPlayers[i].id,
+            player2_id: levelPlayers[j].id,
+            level: levelPlayers[i].level
+          });
+        }
+      }
+
+      const scheduled = scheduleMatches(rr).map((m) => ({
+        ...m,
+        status: "scheduled",
+        result: null,
+        notes: ""
+      }));
+
+      matches = matches.concat(scheduled);
+    }
+
+    const scheduleInsert = await client.query(
+      "INSERT INTO schedules (created_at) VALUES (CURRENT_DATE) RETURNING id, created_at"
+    );
+    const scheduleId = scheduleInsert.rows[0].id;
+    const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
+
+    for (let idx = 0; idx < matches.length; idx++) {
+      const m = matches[idx];
+      const matchKey = `${scheduleId}-${idx}`;
+
+      await client.query(
+        `INSERT INTO matches
+          (schedule_id, match_key, match_date, level, player1_id, player2_id, status, result, notes)
+         VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          scheduleId,
+          matchKey,
+          m.date,
+          Number(m.level),
+          Number(m.player1_id),
+          Number(m.player2_id),
+          m.status ?? "scheduled",
+          m.result ?? null,
+          m.notes ?? ""
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    const { rows: matchRows } = await pool.query(
+      `
+      SELECT
+        m.match_key                               AS "matchId",
+        to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
+        m.level                                   AS "level",
+        p1.name                                   AS "player1",
+        p2.name                                   AS "player2",
+        m.player1_id                              AS "player1Id",
+        m.player2_id                              AS "player2Id",
+        m.status                                  AS "status",
+        m.result                                  AS "result",
+        m.notes                                   AS "notes"
+      FROM matches m
+      JOIN players p1 ON p1.id = m.player1_id
+      JOIN players p2 ON p2.id = m.player2_id
+      WHERE m.schedule_id = $1
+      ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
+      `,
+      [scheduleId]
+    );
+
+    res.json({ id: scheduleId, createdAt, matches: matchRows });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    sendServerError(res, "POST /schedule", err);
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- Schedules CRUD ----------
+app.get("/schedules", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT id, created_at FROM schedules ORDER BY id ASC");
+    res.json(rows.map(r => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
+  } catch (err) {
+    sendServerError(res, "GET /schedules", err);
+  }
+});
+
+app.get("/schedules/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const sched = await pool.query("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
+    if (sched.rows.length === 0) return res.status(404).json({ message: "Schedule not found" });
+
+    const { rows: matchRows } = await pool.query(
+      `
+      SELECT
+        m.match_key                               AS "matchId",
+        to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
+        m.level                                   AS "level",
+        p1.name                                   AS "player1",
+        p2.name                                   AS "player2",
+        m.player1_id                              AS "player1Id",
+        m.player2_id                              AS "player2Id",
+        m.status                                  AS "status",
+        m.result                                  AS "result",
+        m.notes                                   AS "notes"
+      FROM matches m
+      JOIN players p1 ON p1.id = m.player1_id
+      JOIN players p2 ON p2.id = m.player2_id
+      WHERE m.schedule_id = $1
+      ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
+      `,
+      [id]
+    );
+
+    res.json({
+      id: Number(sched.rows[0].id),
+      createdAt: formatDateCA(sched.rows[0].created_at),
+      matches: matchRows
+    });
+  } catch (err) {
+    sendServerError(res, "GET /schedules/:id", err);
+  }
+});
+
+app.delete("/schedules/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await pool.query("DELETE FROM schedules WHERE id = $1", [id]);
+
+    const { rows } = await pool.query("SELECT id, created_at FROM schedules ORDER BY id ASC");
+    res.json(rows.map(r => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
+  } catch (err) {
+    sendServerError(res, "DELETE /schedules/:id", err);
+  }
+});
+
+app.put("/schedules/:id", async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+    const updated = req.body;
+
+    if (!updated?.matches || !Array.isArray(updated.matches)) {
+      return res.status(400).json({ message: "Invalid schedule payload" });
+    }
+
+    await client.query("BEGIN");
+
+    const sched = await client.query("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
+    if (sched.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    for (const m of updated.matches) {
+      if (!m.matchId) continue;
+
+      await client.query(
+        `
+        UPDATE matches
+        SET
+          match_date = COALESCE($1, match_date),
+          status     = COALESCE($2, status),
+          result     = $3,
+          notes      = COALESCE($4, notes),
+          player1_id = COALESCE($5, player1_id),
+          player2_id = COALESCE($6, player2_id)
+        WHERE schedule_id = $7 AND match_key = $8
+        `,
+        [
+          m.date ?? null,
+          m.status ?? null,
+          m.result ?? null,
+          m.notes ?? "",
+          m.player1Id ?? null,
+          m.player2Id ?? null,
+          id,
+          m.matchId
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    const { rows: matchRows } = await pool.query(
+      `
+      SELECT
+        m.match_key                               AS "matchId",
+        to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
+        m.level                                   AS "level",
+        p1.name                                   AS "player1",
+        p2.name                                   AS "player2",
+        m.player1_id                              AS "player1Id",
+        m.player2_id                              AS "player2Id",
+        m.status                                  AS "status",
+        m.result                                  AS "result",
+        m.notes                                   AS "notes"
+      FROM matches m
+      JOIN players p1 ON p1.id = m.player1_id
+      JOIN players p2 ON p2.id = m.player2_id
+      WHERE m.schedule_id = $1
+      ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
+      `,
+      [id]
+    );
+
+    res.json({
+      id: Number(id),
+      createdAt: formatDateCA(sched.rows[0].created_at),
+      matches: matchRows
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    sendServerError(res, "PUT /schedules/:id", err);
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- Start server ----------
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
+});
