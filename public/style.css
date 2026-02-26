@@ -41,6 +41,22 @@ h1{
   letter-spacing: 0.3px;
 }
 
+.heading-with-icon {
+  display: flex; /* or inline-flex */
+  align-items: left;
+}
+
+.heading-with-icon::before {
+  content: "";
+  display: inline-block;
+  background-image: url('path/to/your/icon.svg');
+  background-size: contain;
+  width: 32px; /* Set icon width */
+  height: 32px; /* Set icon height */
+  margin-right: 10px; /* Add space */
+}
+
+
 .subhead{
   color: var(--muted);
   margin: 0 0 20px;
