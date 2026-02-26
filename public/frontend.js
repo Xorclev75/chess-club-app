@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-
     // ---------- Global state ----------
     let currentSchedule = null;
     let allPlayers = [];
@@ -1299,5 +1297,4 @@
     document.addEventListener("DOMContentLoaded", async () => {
       await loadPlayers();
       await loadSchedules();
-    });
->>>>>>> 5ee508736eb8ff20421ad9f7a0fdfcd676228274
+
