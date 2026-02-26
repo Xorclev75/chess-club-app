@@ -42,18 +42,20 @@ h1{
 }
 
 .heading-with-icon {
-  display: flex; /* or inline-flex */
-  align-items: left;
+  display: flex;
+  align-items: center;
 }
 
 .heading-with-icon::before {
   content: "";
   display: inline-block;
-  background-image: url('path/to/your/icon.svg');
+  width: 32px;
+  height: 32px;
+  margin-right: 10px;
+
+  background-image: url('/chess-pawn.svg'); /* FIX THIS PATH */
   background-size: contain;
-  width: 32px; /* Set icon width */
-  height: 32px; /* Set icon height */
-  margin-right: 10px; /* Add space */
+  background-repeat: no-repeat;
 }
 
 
