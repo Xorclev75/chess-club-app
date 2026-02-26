@@ -176,7 +176,6 @@
         try { details = await res.text(); } catch (_) {}
         throw new Error(`${options?.method || "GET"} ${url} failed: ${res.status} ${details}`);
       }
-      // Some endpoints might return empty; yours return JSON for all routes here
       return res.json();
     }
 
@@ -229,7 +228,6 @@
         .map(p => `<option value="${escapeHtml(p.id)}" ${String(p.id) === sel ? "selected" : ""}>${escapeHtml(p.name)}</option>`)
         .join("");
 
-      // allow BYE for odd-player rounds
       return `<option value="" ${sel === "" ? "selected" : ""}>BYE</option>` + opts;
     }
 
@@ -366,7 +364,6 @@
         await api(`/players/${id}`, { method: "DELETE" });
         await loadPlayers();
 
-        // If you're editing a schedule, player name display depends on current roster
         if (currentSchedule) renderSchedule(currentSchedule);
       } catch (err) {
         console.error(err);
@@ -432,29 +429,50 @@
     btnPrint?.addEventListener("click", () => window.print());
     btnSaveSchedule?.addEventListener("click", saveSchedule);
 
-   async function generateSchedule() {
-  try {
-    // optional but helpful so the edit dropdowns have latest roster
-    await loadPlayers();
+    // ✅ FIX #1: define addScheduleToList at top-level (it was incorrectly nested inside loadSchedules)
+    function addScheduleToList(s, { prepend = false } = {}) {
+      const li = document.createElement("li");
+      li.textContent = `Schedule ${s.createdAt} `;
 
-    const newSchedule = await api("/schedule", { method: "POST" });
+      const viewBtn = document.createElement("button");
+      viewBtn.textContent = "View";
+      viewBtn.className = "admin-btn";
+      viewBtn.addEventListener("click", () => viewSchedule(s.id));
 
-    // Show the schedule immediately
-    renderSchedule(newSchedule);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "Delete";
+      deleteBtn.className = "admin-btn btn-danger";
+      deleteBtn.addEventListener("click", () => deleteSchedule(s.id, deleteBtn));
 
-    // Add it to the schedules list immediately (no refresh required)
-    addScheduleToList({ id: newSchedule.id, createdAt: newSchedule.createdAt }, { prepend: true });
+      li.appendChild(viewBtn);
+      li.appendChild(deleteBtn);
 
-    // Scroll to the schedule area
-    document.getElementById("printArea")?.scrollIntoView({ behavior: "smooth" });
+      if (prepend && scheduleList.firstChild) scheduleList.insertBefore(li, scheduleList.firstChild);
+      else scheduleList.appendChild(li);
+    }
 
-    // Optional: refresh list from server (safe even if it fails)
-    loadSchedules({ keepCurrent: true }).catch(() => {});
-  } catch (err) {
-    console.error(err);
-    alert("Generate schedule failed. Check console/logs.");
-  }
-}
+    async function generateSchedule() {
+      try {
+        // optional but helpful so the edit dropdowns have latest roster
+        await loadPlayers();
+
+        const newSchedule = await api("/schedule", { method: "POST" });
+
+        // Show the schedule immediately
+        renderSchedule(newSchedule);
+
+        // ✅ FIX #2: this now works because addScheduleToList is in scope
+        addScheduleToList({ id: newSchedule.id, createdAt: newSchedule.createdAt }, { prepend: true });
+
+        document.getElementById("printArea")?.scrollIntoView({ behavior: "smooth" });
+
+        // Optional: refresh list from server (safe even if it fails)
+        loadSchedules({ keepCurrent: true }).catch(() => {});
+      } catch (err) {
+        console.error(err);
+        alert("Generate schedule failed. Check console/logs.");
+      }
+    }
 
     async function loadSchedules({ keepCurrent = false } = {}) {
       try {
@@ -463,46 +481,7 @@
 
         scheduleList.innerHTML = "";
 
-        list.forEach((s) => {
-          const li = document.createElement("li");
-          li.textContent = `Schedule ${s.createdAt} `;
-
-          const viewBtn = document.createElement("button");
-          viewBtn.textContent = "View";
-          viewBtn.className = "admin-btn";
-          viewBtn.addEventListener("click", () => viewSchedule(s.id));
-
-          const deleteBtn = document.createElement("button");
-          deleteBtn.textContent = "Delete";
-          deleteBtn.className = "admin-btn btn-danger";
-          deleteBtn.addEventListener("click", () => deleteSchedule(s.id, deleteBtn));
-
-          li.appendChild(viewBtn);
-          li.appendChild(deleteBtn);
-          scheduleList.appendChild(li);
-        });
-		
-		//Schedule helper
-		function addScheduleToList(s, { prepend = false } = {}) {
-  const li = document.createElement("li");
-  li.textContent = `Schedule ${s.createdAt} `;
-
-  const viewBtn = document.createElement("button");
-  viewBtn.textContent = "View";
-  viewBtn.className = "admin-btn";
-  viewBtn.addEventListener("click", () => viewSchedule(s.id));
-
-  const deleteBtn = document.createElement("button");
-  deleteBtn.textContent = "Delete";
-  deleteBtn.className = "admin-btn btn-danger";
-  deleteBtn.addEventListener("click", () => deleteSchedule(s.id, deleteBtn));
-
-  li.appendChild(viewBtn);
-  li.appendChild(deleteBtn);
-
-  if (prepend && scheduleList.firstChild) scheduleList.insertBefore(li, scheduleList.firstChild);
-  else scheduleList.appendChild(li);
-}
+        list.forEach((s) => addScheduleToList(s, { prepend: false }));
 
         // Only auto-load a schedule if we aren't editing unsaved changes
         if (!keepCurrent && !scheduleDirty) {
@@ -521,7 +500,6 @@
       if (scheduleDirty && !confirm("You have unsaved changes. Switch schedules anyway?")) return;
 
       try {
-        // Ensure roster is loaded so edit dropdowns have options
         if (!allPlayers.length) await loadPlayers();
 
         const schedule = await api(`/schedules/${id}`);
@@ -541,7 +519,6 @@
         }
         await api(`/schedules/${id}`, { method: "DELETE" });
 
-        // If we deleted the currently open schedule, clear it
         if (currentSchedule?.id === Number(id) || String(currentSchedule?.id) === String(id)) {
           currentSchedule = null;
           setScheduleDirty(false);
@@ -562,10 +539,8 @@
     function normalizeMatchesForUI(matches) {
       return (matches || []).map(m => ({
         ...m,
-        // Ensure numeric ids (or null) for consistent UI logic
         player1Id: m.player1Id === null || m.player1Id === undefined ? null : Number(m.player1Id),
         player2Id: m.player2Id === null || m.player2Id === undefined ? null : Number(m.player2Id),
-        // Ensure names present for display
         player1: m.player1 ?? playerNameFromId(m.level, m.player1Id),
         player2: m.player2 ?? playerNameFromId(m.level, m.player2Id),
       }));
@@ -593,7 +568,6 @@
       tbody.innerHTML = "";
       if (!matches || matches.length === 0) return;
 
-      // Sort by level then date then matchId
       const sorted = [...matches].sort((a, b) => {
         if (Number(a.level) !== Number(b.level)) return Number(a.level) - Number(b.level);
         const dc = String(a.date).localeCompare(String(b.date));
@@ -756,7 +730,6 @@
             date,
             player1Id,
             player2Id,
-            // keep display names in sync for UI
             player1: playerNameFromId(m.level, player1Id),
             player2: playerNameFromId(m.level, player2Id),
             status,
@@ -767,7 +740,6 @@
           currentSchedule.matches[idx] = updatedMatch;
 
           closeModal();
-          // Re-render WITHOUT resetting dirty flag
           document.getElementById("printMeta").textContent =
             `Created: ${currentSchedule.createdAt} | Matches: ${currentSchedule.matches.length}`;
           renderMatches(currentSchedule.matches);
@@ -781,7 +753,6 @@
       if (!currentSchedule?.id) return;
 
       try {
-        // Only send what the server expects: { matches: [...] }
         const payload = {
           matches: (currentSchedule.matches || []).map(m => ({
             matchId: m.matchId,

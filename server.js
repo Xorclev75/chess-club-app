@@ -1,18 +1,12 @@
-// server.js (Render/Postgres/Supabase friendly)
+// server.js (Render/Postgres/Supabase friendly) — IPv4-safe, ONE pool, copy/paste
 "use strict";
 
 require("dotenv").config();
 
 const dns = require("dns");
-dns.setDefaultResultOrder("ipv4first"); // helps IPv6 routing issues on some hosts (Render free tier)
+dns.setDefaultResultOrder("ipv4first"); // helps, but we ALSO hard-resolve IPv4 below
 
 const net = require("net");
-
-const ipv4Lookup = (hostname, options, cb) => {
-  // Force IPv4 only
-  return dns.lookup(hostname, { family: 4 }, cb);
-};
-
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -43,44 +37,6 @@ if (!process.env.DATABASE_URL && !hasPGVars) {
   process.exit(1);
 }
 
-// -------------------- Postgres Pool (ONE pool) --------------------
-const poolConfig = hasPGVars
-  ? {
-      host: process.env.PGHOST,
-      port: Number(process.env.PGPORT),
-      database: process.env.PGDATABASE,
-      user: process.env.PGUSER,
-      password: process.env.PGPASSWORD,
-    }
-  : {
-      connectionString: process.env.DATABASE_URL,
-    };
-
-const pool = new Pool({
-  ...poolConfig,
-  ssl: { rejectUnauthorized: false },
-
-	// Supabase pooler + Render = keep this small & forgiving
-	max: Number(process.env.PG_POOL_MAX || 3),
-  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-  connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
-
-  keepAlive: true,
-  keepAliveInitialDelayMillis: 10000,
-});
-
-pool.on("error", (err) => {
-  console.error("🔥 PG pool error:", err.message);
-});
-
-console.log("DB config:", {
-  using: hasPGVars ? "PG* vars" : "DATABASE_URL",
-  host: poolConfig.host || "(from connectionString)",
-  port: poolConfig.port || "(from connectionString)",
-  database: poolConfig.database || "(from connectionString)",
-  user: poolConfig.user || "(from connectionString)",
-});
-
 // -------------------- Utilities / helpers --------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -97,12 +53,121 @@ function sendServerError(res, route, err) {
   const message = err?.message || String(err);
   console.error(`${route} failed${code ? ` (${code})` : ""}:`, message);
 
-  // Keep details during debugging (you can remove detail later)
   return res.status(500).json({
     message: "Server error",
     code,
     detail: message,
   });
+}
+
+async function resolveIPv4(hostname) {
+  // If it's already an IP (v4 or v6), just return it
+  if (net.isIP(hostname)) return hostname;
+
+  // FORCE_IPV4 defaults to true (you can set FORCE_IPV4=0 to disable)
+  if (String(process.env.FORCE_IPV4 ?? "1") === "0") return hostname;
+
+  try {
+    const { address } = await dns.promises.lookup(hostname, { family: 4 });
+    return address; // numeric IPv4, avoids AAAA selection entirely
+  } catch (e) {
+    console.warn(`⚠️ IPv4 lookup failed for ${hostname}; using hostname as-is.`, e.message);
+    return hostname;
+  }
+}
+
+// -------------------- Postgres Pool (ONE pool) --------------------
+let pool; // initialized in initDb()
+
+async function initDb() {
+  // Build config from either PG* or DATABASE_URL, then hard-resolve host to IPv4
+  let poolConfig = null;
+  let logConfig = null;
+
+  if (hasPGVars) {
+    const originalHost = process.env.PGHOST;
+    const resolvedHost = await resolveIPv4(originalHost);
+
+    poolConfig = {
+      host: resolvedHost,
+      port: Number(process.env.PGPORT),
+      database: process.env.PGDATABASE,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+    };
+
+    logConfig = {
+      using: "PG* vars",
+      hostOriginal: originalHost,
+      hostResolved: resolvedHost,
+      port: poolConfig.port,
+      database: poolConfig.database,
+      user: poolConfig.user,
+    };
+  } else {
+    // Parse DATABASE_URL so we can replace hostname with resolved IPv4
+    const u = new URL(process.env.DATABASE_URL);
+
+    const originalHost = u.hostname;
+    const resolvedHost = await resolveIPv4(originalHost);
+
+    // URL decoding for user/pass (URL can contain %xx)
+    const user = decodeURIComponent(u.username || "");
+    const password = decodeURIComponent(u.password || "");
+    const database = (u.pathname || "").replace(/^\//, "");
+    const port = Number(u.port || 5432);
+
+    poolConfig = {
+      host: resolvedHost,
+      port,
+      database,
+      user,
+      password,
+      // If you need extras from the URL (rare), you can read u.searchParams here.
+    };
+
+    logConfig = {
+      using: "DATABASE_URL",
+      hostOriginal: originalHost,
+      hostResolved: resolvedHost,
+      port,
+      database,
+      user,
+    };
+  }
+
+  pool = new Pool({
+    ...poolConfig,
+    ssl: { rejectUnauthorized: false },
+
+    // Supabase pooler + Render = keep this small & forgiving
+    max: Number(process.env.PG_POOL_MAX || 3),
+    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 30000),
+
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+  });
+
+  pool.on("error", (err) => {
+    console.error("🔥 PG pool error:", err.message);
+  });
+
+  console.log("DB config:", logConfig);
+
+  // Warm-up ping (helps cold starts)
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("✅ DB connected (startup ping ok)");
+      return;
+    } catch (e) {
+      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${e.message}`);
+      await sleep(800 * attempt);
+    }
+  }
+
+  console.warn("⚠️ DB startup ping failed after retries (requests may still succeed).");
 }
 
 // Retry wrapper for transient query issues
@@ -114,6 +179,7 @@ async function queryWithRetry(text, params = [], attempts = 3) {
     const transient =
       err?.code === "ETIMEDOUT" ||
       err?.code === "ECONNRESET" ||
+      err?.code === "ENETUNREACH" ||
       msg.includes("connection terminated") ||
       msg.includes("timeout") ||
       msg.includes("terminated unexpectedly");
@@ -131,7 +197,6 @@ async function connectWithRetry(attempts = 4) {
     try {
       const client = await pool.connect();
 
-      // Prevent unhandled client 'error' event from crashing Node
       client.on("error", (err) => {
         console.error("PG client error:", err.message);
       });
@@ -141,6 +206,7 @@ async function connectWithRetry(attempts = 4) {
       const msg = String(err?.message || "").toLowerCase();
       const transient =
         err?.code === "ETIMEDOUT" ||
+        err?.code === "ENETUNREACH" ||
         msg.includes("timeout") ||
         msg.includes("terminated") ||
         msg.includes("connection");
@@ -150,21 +216,6 @@ async function connectWithRetry(attempts = 4) {
     }
   }
 }
-
-// Warm-up ping (helps cold starts)
-(async () => {
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      await pool.query("SELECT 1");
-      console.log("✅ DB connected (startup ping ok)");
-      return;
-    } catch (e) {
-      console.warn(`⚠️ DB startup ping attempt ${attempt}/5 failed: ${e.message}`);
-      await sleep(800 * attempt);
-    }
-  }
-  console.warn("⚠️ DB startup ping failed after retries (requests may still succeed).");
-})();
 
 // -------------------- Data helpers --------------------
 async function listPlayers() {
@@ -243,7 +294,6 @@ app.get("/db-whoami", async (req, res) => {
   }
 });
 
-// Quick reachability check (helpful on Render)
 app.get("/db-health", async (req, res) => {
   try {
     await queryWithRetry("SELECT 1");
@@ -379,12 +429,10 @@ app.post("/schedule", async (req, res) => {
 
   try {
     await client.query("BEGIN");
-    // Optional: make this transaction fail fast if something truly hangs
     await client.query("SET LOCAL statement_timeout = '30s'");
 
     const levels = await getPlayersByLevel(client);
 
-    // Create schedule header
     const scheduleInsert = await client.query(
       "INSERT INTO schedules (created_at) VALUES (CURRENT_DATE) RETURNING id, created_at"
     );
@@ -392,7 +440,6 @@ app.post("/schedule", async (req, res) => {
     const scheduleId = scheduleInsert.rows[0].id;
     const createdAt = formatDateCA(scheduleInsert.rows[0].created_at);
 
-    // Build all match rows in memory
     let idx = 0;
     const rowsToInsert = [];
 
@@ -403,20 +450,19 @@ app.post("/schedule", async (req, res) => {
 
       for (const m of scheduled) {
         rowsToInsert.push([
-          scheduleId,                      // schedule_id
-          `${scheduleId}-${idx++}`,        // match_key
-          m.date,                          // match_date (YYYY-MM-DD)
-          Number(m.level),                 // level
-          m.player1_id ?? null,            // player1_id (nullable for BYE)
-          m.player2_id ?? null,            // player2_id (nullable for BYE)
-          "scheduled",                     // status
-          null,                            // result
-          m.isBye ? "BYE" : "",            // notes
+          scheduleId,
+          `${scheduleId}-${idx++}`,
+          m.date,
+          Number(m.level),
+          m.player1_id ?? null,
+          m.player2_id ?? null,
+          "scheduled",
+          null,
+          m.isBye ? "BYE" : "",
         ]);
       }
     }
 
-    // Insert matches in one SQL call
     if (rowsToInsert.length > 0) {
       const values = [];
       const params = [];
@@ -440,7 +486,6 @@ app.post("/schedule", async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Return the schedule
     const matches = await fetchScheduleMatches(scheduleId);
     res.json({ id: scheduleId, createdAt, matches });
   } catch (err) {
@@ -466,7 +511,7 @@ app.put("/schedules/:id", async (req, res) => {
     }
 
     await client.query("BEGIN");
-	await client.query("SET LOCAL statement_timeout = '30s'");
+    await client.query("SET LOCAL statement_timeout = '30s'");
 
     const sched = await client.query("SELECT id, created_at FROM schedules WHERE id = $1", [id]);
     if (sched.rows.length === 0) {
@@ -527,7 +572,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Server error", detail: err?.message || String(err) });
 });
 
-// -------------------- Start server --------------------
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
-});
+// -------------------- Start server (after DB init) --------------------
+(async () => {
+  await initDb();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Chess Club app running at http://0.0.0.0:${PORT}`);
+  });
+})();
