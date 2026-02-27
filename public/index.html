@@ -6,7 +6,7 @@
 
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="/favicon.ico" sizes="any">
-	<link rel="icon" href="/chess-pawn.svg" type="image/svg+xml">
+  <link rel="icon" href="/chess-pawn.svg" type="image/svg+xml">
 
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&display=swap" rel="stylesheet">
 </head>
@@ -15,10 +15,10 @@
   <div class="container">
 
     <div class="no-print">
-	<h1 class="heading-with-icon">
-	  Chess Club
-	</h1>
-   
+      <h1 class="heading-with-icon">
+        Chess Club
+      </h1>
+
       <p class="subhead">Add players, generate schedules, filter by Thursdays, and print.</p>
 
       <div class="card">
@@ -171,7 +171,7 @@
 
     // ---------- Helpers ----------
     function escapeHtml(str) {
-      return String(str)
+      return String(str ?? "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
@@ -189,6 +189,35 @@
         status.textContent = isDirty ? "Unsaved changes" : "Saved";
         status.style.color = isDirty ? "#22c55e" : "rgba(233,238,252,0.75)";
       }
+    }
+
+    // Normalize match object to be BYE-safe and id-safe
+    function normalizeMatch(m) {
+      const player1 = m.player1 ?? "";
+      const player2 =
+        (m.player2Id == null || m.player2 == null || String(m.player2).trim() === "")
+          ? "BYE"
+          : m.player2;
+
+      const isBye = (m.player2Id == null) || (String(player2).toUpperCase() === "BYE") || !!m.isBye;
+
+      return {
+        ...m,
+        player1,
+        player2,
+        isBye
+      };
+    }
+
+    function getPlayerByNameAndLevel(name, level) {
+      return allPlayers.find(p => Number(p.level) === Number(level) && p.name === name) || null;
+    }
+
+    function getPlayerNamesByLevel(level) {
+      return allPlayers
+        .filter(p => Number(p.level) === Number(level))
+        .map(p => p.name)
+        .sort((a, b) => a.localeCompare(b));
     }
 
     // ---------- Modal helpers ----------
@@ -349,19 +378,6 @@
       });
     }
 
-    function getPlayerNamesByLevel(level) {
-      return allPlayers
-        .filter(p => Number(p.level) === Number(level))
-        .map(p => p.name)
-        .sort((a, b) => a.localeCompare(b));
-    }
-
-    function buildOptions(names, selected) {
-      return names.map(n =>
-        `<option value="${escapeHtml(n)}" ${n === selected ? "selected" : ""}>${escapeHtml(n)}</option>`
-      ).join("");
-    }
-
     // ---------- Schedules ----------
     btnGenerate.addEventListener("click", generateSchedule);
     btnFilter.addEventListener("click", applyDateFilter);
@@ -429,13 +445,19 @@
     }
 
     function renderSchedule(schedule) {
-      currentSchedule = schedule;
+      // Normalize matches for BYE
+      const normalized = {
+        ...schedule,
+        matches: Array.isArray(schedule.matches) ? schedule.matches.map(normalizeMatch) : []
+      };
+
+      currentSchedule = normalized;
 
       document.getElementById("printTitle").textContent = "Round Robin Schedule";
       document.getElementById("printMeta").textContent =
-        `Created: ${schedule.createdAt} | Matches: ${schedule.matches.length}`;
+        `Created: ${normalized.createdAt} | Matches: ${normalized.matches.length}`;
 
-      renderMatches(schedule.matches);
+      renderMatches(normalized.matches);
       setScheduleDirty(false);
     }
 
@@ -443,7 +465,9 @@
       const tbody = document.querySelector("#printTable tbody");
       tbody.innerHTML = "";
 
-      matches.forEach(m => {
+      matches.forEach(raw => {
+        const m = normalizeMatch(raw);
+
         const tr = document.createElement("tr");
 
         const tdDate = document.createElement("td");
@@ -456,7 +480,7 @@
         tdPlayer.textContent = m.player1;
 
         const tdOpponent = document.createElement("td");
-        tdOpponent.textContent = m.player2;
+        tdOpponent.textContent = m.player2; // "BYE" if no opponent
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
@@ -510,7 +534,21 @@
         return;
       }
 
-      const names = getPlayerNamesByLevel(m.level);
+      // Build id->name lists by level
+      const playersAtLevel = allPlayers
+        .filter(p => Number(p.level) === Number(m.level))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      // Ensure current selections are available
+      const byeOption = { id: null, name: "BYE" };
+
+      const opponentOptions = [byeOption, ...playersAtLevel];
+
+      const player1Id = m.player1Id ?? getPlayerByNameAndLevel(m.player1, m.level)?.id ?? null;
+      const player2Id =
+        (m.isBye || m.player2Id == null || String(m.player2).toUpperCase() === "BYE")
+          ? null
+          : (m.player2Id ?? getPlayerByNameAndLevel(m.player2, m.level)?.id ?? null);
 
       openModal({
         title: "Edit Match",
@@ -521,17 +559,34 @@
           </div>
 
           <div class="field">
-            <label for="mm_player1">Player</label>
-            <select id="mm_player1" name="player1">
-              ${buildOptions(names, m.player1)}
+            <label for="mm_player1Id">Player</label>
+            <select id="mm_player1Id" name="player1Id">
+              ${playersAtLevel.map(p => `
+                <option value="${p.id}" ${String(p.id) === String(player1Id) ? "selected" : ""}>
+                  ${escapeHtml(p.name)}
+                </option>
+              `).join("")}
             </select>
           </div>
 
           <div class="field">
-            <label for="mm_player2">Opponent</label>
-            <select id="mm_player2" name="player2">
-              ${buildOptions(names, m.player2)}
+            <label for="mm_player2Id">Opponent</label>
+            <select id="mm_player2Id" name="player2Id">
+              ${opponentOptions.map(p => `
+                <option value="${p.id == null ? "" : p.id}"
+                  ${
+                    (p.id == null && player2Id == null) ||
+                    (p.id != null && String(p.id) === String(player2Id))
+                      ? "selected"
+                      : ""
+                  }>
+                  ${escapeHtml(p.name)}
+                </option>
+              `).join("")}
             </select>
+            <div style="margin-top:6px; opacity:0.8; font-size:0.9rem;">
+              Choose <strong>BYE</strong> for an odd-player sit-out.
+            </div>
           </div>
 
           <div class="field">
@@ -557,13 +612,26 @@
         `,
         onSubmit: async (fd) => {
           const date = fd.get("date").toString();
-          const player1 = fd.get("player1").toString();
-          const player2 = fd.get("player2").toString();
+
+          const newP1Id = fd.get("player1Id").toString();
+          const rawP2Id = fd.get("player2Id").toString(); // "" means BYE
+
           const status = fd.get("status").toString();
           const result = fd.get("result").toString().trim() || null;
           const notes = fd.get("notes").toString().trim() || "";
 
-          if (player1 === player2) {
+          const player1Obj = allPlayers.find(p => String(p.id) === String(newP1Id));
+          if (!player1Obj) {
+            alert("Could not resolve Player. Try reloading the page.");
+            return;
+          }
+
+          const player2Obj = rawP2Id
+            ? allPlayers.find(p => String(p.id) === String(rawP2Id))
+            : null;
+
+          // Prevent same player vs same player (but allow BYE)
+          if (player2Obj && String(player1Obj.id) === String(player2Obj.id)) {
             alert("Player and Opponent cannot be the same.");
             return;
           }
@@ -575,15 +643,23 @@
             return;
           }
 
-          currentSchedule.matches[idx] = {
+          const updatedMatch = {
             ...currentSchedule.matches[idx],
             date,
-            player1,
-            player2,
             status,
             result,
-            notes
+            notes,
+
+            // Keep BOTH ids and names so the server can persist correctly
+            player1Id: player1Obj.id,
+            player1: player1Obj.name,
+
+            player2Id: player2Obj ? player2Obj.id : null,
+            player2: player2Obj ? player2Obj.name : "BYE",
+            isBye: !player2Obj
           };
+
+          currentSchedule.matches[idx] = normalizeMatch(updatedMatch);
 
           closeModal();
           renderSchedule(currentSchedule);
@@ -595,10 +671,26 @@
     async function saveSchedule() {
       if (!currentSchedule?.id) return;
 
+      // Send ids if we have them; server PUT is now BYE-capable (player2Id can be null)
+      const payload = {
+        ...currentSchedule,
+        matches: (currentSchedule.matches || []).map(m => ({
+          matchId: m.matchId,
+          date: m.date,
+          status: m.status,
+          result: m.result ?? null,
+          notes: m.notes ?? "",
+
+          // ids are what the server updates
+          player1Id: m.player1Id ?? null,
+          player2Id: (m.player2Id == null ? null : m.player2Id),
+        }))
+      };
+
       const res = await fetch(`/schedules/${currentSchedule.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(currentSchedule)
+        body: JSON.stringify(payload)
       });
 
       if (!res.ok) {
@@ -609,9 +701,12 @@
       }
 
       const saved = await res.json();
-      currentSchedule = saved;
+      currentSchedule = {
+        ...saved,
+        matches: Array.isArray(saved.matches) ? saved.matches.map(normalizeMatch) : []
+      };
 
-      renderSchedule(saved);
+      renderSchedule(currentSchedule);
       setScheduleDirty(false);
       loadSchedules();
     }

@@ -1,4 +1,4 @@
-// server.js (Postgres version)
+// server.js (Postgres version) — updated to support BYE (odd # of players)
 require("dotenv").config();
 
 const dns = require("dns");
@@ -31,7 +31,7 @@ const { Pool } = require("pg");
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 5,                    // keep low on free tiers
+  max: 5, // keep low on free tiers
   idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 5000,
 });
@@ -88,9 +88,7 @@ app.post("/add-player", async (req, res) => {
       [name.trim(), Number(level)]
     );
 
-    const { rows } = await pool.query(
-      "SELECT id, name, level, score FROM players ORDER BY id ASC"
-    );
+    const { rows } = await pool.query("SELECT id, name, level, score FROM players ORDER BY id ASC");
     res.json(rows);
   } catch (err) {
     sendServerError(res, "POST /add-player", err);
@@ -99,9 +97,7 @@ app.post("/add-player", async (req, res) => {
 
 app.get("/players", async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      "SELECT id, name, level, score FROM players ORDER BY id ASC"
-    );
+    const { rows } = await pool.query("SELECT id, name, level, score FROM players ORDER BY id ASC");
     res.json(rows);
   } catch (err) {
     sendServerError(res, "GET /players", err);
@@ -125,14 +121,14 @@ app.put("/players/:id", async (req, res) => {
     const newLevel = level !== undefined ? Number(level) : existing.level;
     const newScore = score !== undefined ? Number(score) : Number(existing.score ?? 0);
 
-    await pool.query(
-      "UPDATE players SET name = $1, level = $2, score = $3 WHERE id = $4",
-      [newName, newLevel, newScore, id]
-    );
+    await pool.query("UPDATE players SET name = $1, level = $2, score = $3 WHERE id = $4", [
+      newName,
+      newLevel,
+      newScore,
+      id,
+    ]);
 
-    const { rows } = await pool.query(
-      "SELECT id, name, level, score FROM players ORDER BY id ASC"
-    );
+    const { rows } = await pool.query("SELECT id, name, level, score FROM players ORDER BY id ASC");
     res.json(rows);
   } catch (err) {
     sendServerError(res, "PUT /players/:id", err);
@@ -153,15 +149,14 @@ app.delete("/players/:id", async (req, res) => {
 
     if (rows[0].cnt > 0) {
       return res.status(409).json({
-        message: "Cannot delete player: they are assigned to one or more saved matches. Remove them from schedules (or delete those schedules) first."
+        message:
+          "Cannot delete player: they are assigned to one or more saved matches. Remove them from schedules (or delete those schedules) first.",
       });
     }
 
     await pool.query("DELETE FROM players WHERE id = $1", [id]);
 
-    const { rows: players } = await pool.query(
-      "SELECT id, name, level, score FROM players ORDER BY id ASC"
-    );
+    const { rows: players } = await pool.query("SELECT id, name, level, score FROM players ORDER BY id ASC");
     res.json(players);
   } catch (err) {
     sendServerError(res, "DELETE /players/:id", err);
@@ -169,6 +164,7 @@ app.delete("/players/:id", async (req, res) => {
 });
 
 // ---------- Schedule (preview only; does not save) ----------
+// Now supports BYE (odd player count) via generateRoundRobin() + scheduleMatches() using rounds.
 app.get("/schedule", async (req, res) => {
   try {
     const levels = await getPlayersByLevel();
@@ -177,8 +173,8 @@ app.get("/schedule", async (req, res) => {
     for (const levelPlayers of Object.values(levels)) {
       if (levelPlayers.length < 2) continue;
 
-      const matches = generateRoundRobin(levelPlayers);
-      const scheduled = scheduleMatches(matches);
+      const matches = generateRoundRobin(levelPlayers); // includes BYE when odd
+      const scheduled = scheduleMatches(matches);       // one round per Thursday
       fullSchedule = fullSchedule.concat(scheduled);
     }
 
@@ -189,6 +185,8 @@ app.get("/schedule", async (req, res) => {
 });
 
 // ---------- Schedule (generate + save) ----------
+// Now supports BYE by inserting matches with player2_id = NULL.
+// NOTE: Your DB must allow matches.player2_id to be NULL.
 app.post("/schedule", async (req, res) => {
   const client = await pool.connect();
 
@@ -201,24 +199,12 @@ app.post("/schedule", async (req, res) => {
     for (const levelPlayers of Object.values(levels)) {
       if (levelPlayers.length < 2) continue;
 
-      const rr = [];
-      for (let i = 0; i < levelPlayers.length; i++) {
-        for (let j = i + 1; j < levelPlayers.length; j++) {
-          rr.push({
-            player1: levelPlayers[i].name,
-            player2: levelPlayers[j].name,
-            player1_id: levelPlayers[i].id,
-            player2_id: levelPlayers[j].id,
-            level: levelPlayers[i].level
-          });
-        }
-      }
-
+      const rr = generateRoundRobin(levelPlayers); // includes player1_id/player2_id (null for BYE)
       const scheduled = scheduleMatches(rr).map((m) => ({
         ...m,
         status: "scheduled",
         result: null,
-        notes: ""
+        notes: "",
       }));
 
       matches = matches.concat(scheduled);
@@ -245,16 +231,17 @@ app.post("/schedule", async (req, res) => {
           m.date,
           Number(m.level),
           Number(m.player1_id),
-          Number(m.player2_id),
+          m.player2_id !== null && m.player2_id !== undefined ? Number(m.player2_id) : null, // BYE => NULL
           m.status ?? "scheduled",
           m.result ?? null,
-          m.notes ?? ""
+          m.notes ?? "",
         ]
       );
     }
 
     await client.query("COMMIT");
 
+    // IMPORTANT: LEFT JOIN so BYE rows (player2_id NULL) still come back.
     const { rows: matchRows } = await pool.query(
       `
       SELECT
@@ -262,15 +249,16 @@ app.post("/schedule", async (req, res) => {
         to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
         m.level                                   AS "level",
         p1.name                                   AS "player1",
-        p2.name                                   AS "player2",
+        COALESCE(p2.name, 'BYE')                  AS "player2",
         m.player1_id                              AS "player1Id",
         m.player2_id                              AS "player2Id",
+        (m.player2_id IS NULL)                    AS "isBye",
         m.status                                  AS "status",
         m.result                                  AS "result",
         m.notes                                   AS "notes"
       FROM matches m
       JOIN players p1 ON p1.id = m.player1_id
-      JOIN players p2 ON p2.id = m.player2_id
+      LEFT JOIN players p2 ON p2.id = m.player2_id
       WHERE m.schedule_id = $1
       ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
       `,
@@ -290,7 +278,7 @@ app.post("/schedule", async (req, res) => {
 app.get("/schedules", async (req, res) => {
   try {
     const { rows } = await pool.query("SELECT id, created_at FROM schedules ORDER BY id ASC");
-    res.json(rows.map(r => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
+    res.json(rows.map((r) => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
   } catch (err) {
     sendServerError(res, "GET /schedules", err);
   }
@@ -310,15 +298,16 @@ app.get("/schedules/:id", async (req, res) => {
         to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
         m.level                                   AS "level",
         p1.name                                   AS "player1",
-        p2.name                                   AS "player2",
+        COALESCE(p2.name, 'BYE')                  AS "player2",
         m.player1_id                              AS "player1Id",
         m.player2_id                              AS "player2Id",
+        (m.player2_id IS NULL)                    AS "isBye",
         m.status                                  AS "status",
         m.result                                  AS "result",
         m.notes                                   AS "notes"
       FROM matches m
       JOIN players p1 ON p1.id = m.player1_id
-      JOIN players p2 ON p2.id = m.player2_id
+      LEFT JOIN players p2 ON p2.id = m.player2_id
       WHERE m.schedule_id = $1
       ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
       `,
@@ -328,7 +317,7 @@ app.get("/schedules/:id", async (req, res) => {
     res.json({
       id: Number(sched.rows[0].id),
       createdAt: formatDateCA(sched.rows[0].created_at),
-      matches: matchRows
+      matches: matchRows,
     });
   } catch (err) {
     sendServerError(res, "GET /schedules/:id", err);
@@ -342,12 +331,13 @@ app.delete("/schedules/:id", async (req, res) => {
     await pool.query("DELETE FROM schedules WHERE id = $1", [id]);
 
     const { rows } = await pool.query("SELECT id, created_at FROM schedules ORDER BY id ASC");
-    res.json(rows.map(r => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
+    res.json(rows.map((r) => ({ id: r.id, createdAt: formatDateCA(r.created_at) })));
   } catch (err) {
     sendServerError(res, "DELETE /schedules/:id", err);
   }
 });
 
+// Updated to allow explicitly setting player2_id to NULL (BYE) when the field is present in payload
 app.put("/schedules/:id", async (req, res) => {
   const client = await pool.connect();
 
@@ -370,6 +360,9 @@ app.put("/schedules/:id", async (req, res) => {
     for (const m of updated.matches) {
       if (!m.matchId) continue;
 
+      const hasP1 = Object.prototype.hasOwnProperty.call(m, "player1Id");
+      const hasP2 = Object.prototype.hasOwnProperty.call(m, "player2Id"); // if present, allow null to overwrite
+
       await client.query(
         `
         UPDATE matches
@@ -378,8 +371,8 @@ app.put("/schedules/:id", async (req, res) => {
           status     = COALESCE($2, status),
           result     = $3,
           notes      = COALESCE($4, notes),
-          player1_id = COALESCE($5, player1_id),
-          player2_id = COALESCE($6, player2_id)
+          player1_id = CASE WHEN $9 THEN $5 ELSE player1_id END,
+          player2_id = CASE WHEN $10 THEN $6 ELSE player2_id END
         WHERE schedule_id = $7 AND match_key = $8
         `,
         [
@@ -387,10 +380,12 @@ app.put("/schedules/:id", async (req, res) => {
           m.status ?? null,
           m.result ?? null,
           m.notes ?? "",
-          m.player1Id ?? null,
-          m.player2Id ?? null,
+          hasP1 ? m.player1Id : null,
+          hasP2 ? m.player2Id : null, // can be null to set BYE
           id,
-          m.matchId
+          m.matchId,
+          hasP1,
+          hasP2,
         ]
       );
     }
@@ -404,15 +399,16 @@ app.put("/schedules/:id", async (req, res) => {
         to_char(m.match_date, 'YYYY-MM-DD')       AS "date",
         m.level                                   AS "level",
         p1.name                                   AS "player1",
-        p2.name                                   AS "player2",
+        COALESCE(p2.name, 'BYE')                  AS "player2",
         m.player1_id                              AS "player1Id",
         m.player2_id                              AS "player2Id",
+        (m.player2_id IS NULL)                    AS "isBye",
         m.status                                  AS "status",
         m.result                                  AS "result",
         m.notes                                   AS "notes"
       FROM matches m
       JOIN players p1 ON p1.id = m.player1_id
-      JOIN players p2 ON p2.id = m.player2_id
+      LEFT JOIN players p2 ON p2.id = m.player2_id
       WHERE m.schedule_id = $1
       ORDER BY m.match_date ASC, m.level ASC, m.match_key ASC
       `,
@@ -422,7 +418,7 @@ app.put("/schedules/:id", async (req, res) => {
     res.json({
       id: Number(id),
       createdAt: formatDateCA(sched.rows[0].created_at),
-      matches: matchRows
+      matches: matchRows,
     });
   } catch (err) {
     await client.query("ROLLBACK");
