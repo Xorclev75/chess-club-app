@@ -4,10 +4,8 @@
   <meta charset="utf-8" />
   <title>Chess Club</title>
 
-  <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="style.css">  
   <link rel="icon" href="/chess-pawn.svg" type="image/svg+xml">
-
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&display=swap" rel="stylesheet">
 </head>
 
@@ -305,7 +303,9 @@
         tdLevel.textContent = p.level;
 
         const tdScore = document.createElement("td");
-        tdScore.textContent = p.score ?? 0;
+        
+		const scoreNum = Number(p.score ?? 0);
+		tdScore.textContent = scoreNum.toString().replace(/\.?0+$/, '');
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
