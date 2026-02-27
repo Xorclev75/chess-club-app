@@ -303,9 +303,11 @@
         tdLevel.textContent = p.level;
 
         const tdScore = document.createElement("td");
-        
+
 		const scoreNum = Number(p.score ?? 0);
-		tdScore.textContent = scoreNum.toString().replace(/\.?0+$/, '');
+		tdScore.textContent = scoreNum % 1 === 0
+		  ? scoreNum
+		  : scoreNum.toFixed(1);
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
