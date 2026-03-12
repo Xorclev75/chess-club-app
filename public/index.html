@@ -136,7 +136,7 @@
     </div>
 
     <footer class="no-print app-footer">
-      <p>Built by <strong>Josh Schwartzkopf</strong> © 2026</p>
+      <p>Built by <strong>Josh Schwartzkopf</strong> © <span class="date"></span></p>
     </footer>
 
   </div><!-- /.container -->
@@ -725,6 +725,22 @@
       loadPlayers();
       loadSchedules();
     });
+	
+	//Script for dynamically setting copyright date
+        function displayDateRange() {
+		var currentDate = new Date();
+		var dateElements = document.querySelectorAll(".date");
+
+		var options = { year: 'numeric' };
+		dateElements.forEach(function (dateElement, i) {
+			var date = new Date(currentDate);
+			date.setDate(currentDate.getDate() - i);
+			dateElement.innerHTML = date.toLocaleDateString(undefined, options);
+		});
+	}
+
+	// Call the function to display the date range
+	displayDateRange();
   </script>
 </body>
 </html>

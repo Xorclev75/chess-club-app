@@ -66,16 +66,6 @@ async function getPlayersByLevel(client = pool) {
 // ---------- Health ----------
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
-// ---------- DB test ----------
-app.get("/db-test", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT NOW()");
-    res.json({ success: true, timeFromDatabase: result.rows[0].now });
-  } catch (err) {
-    console.error("DB TEST FAILED:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // ---------- Players ----------
 app.post("/add-player", async (req, res) => {
