@@ -4,18 +4,55 @@
   <meta charset="utf-8" />
   <title>Chess Club</title>
 
-  <link rel="stylesheet" href="style.css">  
+  <link rel="stylesheet" href="style.css">
   <link rel="icon" href="/chess-pawn.svg" type="image/svg+xml">
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&display=swap" rel="stylesheet">
+
+  <style>
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 9999;
+    }
+    .auth-overlay.hidden { display: none; }
+    .auth-card { width: min(480px, 100%); }
+    .auth-error { margin-top: 10px; color: #fca5a5; }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+  </style>
 </head>
 
 <body>
+  <div id="authOverlay" class="auth-overlay hidden" aria-hidden="true">
+    <div class="card auth-card">
+      <h2 style="margin-top:0;">Sign In</h2>
+      <hr />
+      <p>Enter the club password to access the app.</p>
+      <form id="authForm" class="row">
+        <input id="authPassword" type="password" placeholder="Password" required />
+        <button id="authSubmit" class="admin-btn btn-primary" type="submit">Sign In</button>
+      </form>
+      <div id="authError" class="auth-error"></div>
+    </div>
+  </div>
+
   <div class="container">
 
     <div class="no-print">
-      <h1 class="heading-with-icon">
-        Chess Club
-      </h1>
+      <div class="topbar">
+        <h1 class="heading-with-icon">Chess Club</h1>
+        <button id="btnLogout" class="admin-btn" type="button">Log out</button>
+      </div>
 
       <p class="subhead">Add players, generate schedules, filter by Thursdays, and print.</p>
 
@@ -57,9 +94,8 @@
           <button class="admin-btn" type="button" id="btnClearFilter">Clear</button>
         </div>
       </div>
-    </div><!-- /.no-print -->
+    </div>
 
-    <!-- PRINT AREA -->
     <div id="printArea" class="card">
       <h2 id="printTitle">Schedule</h2>
       <hr />
@@ -80,7 +116,6 @@
         </table>
       </div>
 
-      <!-- Status + Save/Print -->
       <div class="no-print row" style="margin-top:12px; justify-content: space-between;">
         <div id="scheduleStatus" style="color: rgba(233,238,252,0.75); font-size: 0.95rem;">
           Saved
@@ -116,7 +151,6 @@
       </div>
     </div>
 
-    <!-- Modal Backdrop -->
     <div id="modalBackdrop" class="modal-backdrop hidden" aria-hidden="true">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-header">
@@ -136,28 +170,31 @@
     </div>
 
     <footer class="no-print app-footer">
-      <p>Built by <strong>Josh Schwartzkopf</strong> © <span class="date"></span></p>
+      <p>Built by <strong>Josh Schwartzkopf</strong> © 2026</p>
     </footer>
 
-  </div><!-- /.container -->
+  </div>
 
   <script>
-    // ---------- Global state ----------
     let currentSchedule = null;
     let allPlayers = [];
     let scheduleDirty = false;
 
-    // ---------- DOM refs ----------
     const form = document.getElementById("playerForm");
     const scheduleList = document.getElementById("scheduleList");
-
     const btnGenerate = document.getElementById("btnGenerate");
     const btnFilter = document.getElementById("btnFilter");
     const btnClearFilter = document.getElementById("btnClearFilter");
     const btnPrint = document.getElementById("btnPrint");
     const btnSaveSchedule = document.getElementById("btnSaveSchedule");
+    const btnLogout = document.getElementById("btnLogout");
 
-    // Modal refs
+    const authOverlay = document.getElementById("authOverlay");
+    const authForm = document.getElementById("authForm");
+    const authPassword = document.getElementById("authPassword");
+    const authError = document.getElementById("authError");
+    const authSubmit = document.getElementById("authSubmit");
+
     const modalBackdrop = document.getElementById("modalBackdrop");
     const modalTitle = document.getElementById("modalTitle");
     const modalBody = document.getElementById("modalBody");
@@ -167,7 +204,69 @@
 
     let modalOnSubmit = null;
 
-    // ---------- Helpers ----------
+    function showLogin(message = "") {
+      authError.textContent = message;
+      authPassword.value = "";
+      authOverlay.classList.remove("hidden");
+      authPassword.focus();
+    }
+
+    function hideLogin() {
+      authError.textContent = "";
+      authOverlay.classList.add("hidden");
+    }
+
+    async function authMe() {
+      const res = await fetch("/auth/me");
+      return res.json();
+    }
+
+    async function authFetch(url, options = {}) {
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        showLogin("Please sign in.");
+        throw new Error("Unauthorized");
+      }
+      return res;
+    }
+
+    authForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      authSubmit.disabled = true;
+      authSubmit.textContent = "Signing in...";
+
+      try {
+        const res = await fetch("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: authPassword.value })
+        });
+
+        if (!res.ok) {
+          showLogin("Incorrect password.");
+          return;
+        }
+
+        hideLogin();
+        await loadPlayers();
+        await loadSchedules();
+      } catch {
+        showLogin("Sign in failed.");
+      } finally {
+        authSubmit.disabled = false;
+        authSubmit.textContent = "Sign In";
+      }
+    });
+
+    btnLogout.addEventListener("click", async () => {
+      await fetch("/auth/logout", { method: "POST" });
+      showLogin("Signed out.");
+      document.querySelector("#playerTable tbody").innerHTML = "";
+      clearScheduleDisplay();
+      scheduleList.innerHTML = "";
+    });
+
     function escapeHtml(str) {
       return String(str ?? "")
         .replaceAll("&", "&amp;")
@@ -179,17 +278,12 @@
 
     function setScheduleDirty(isDirty) {
       scheduleDirty = isDirty;
-
       const status = document.getElementById("scheduleStatus");
-      if (btnSaveSchedule) btnSaveSchedule.disabled = !isDirty;
-
-      if (status) {
-        status.textContent = isDirty ? "Unsaved changes" : "Saved";
-        status.style.color = isDirty ? "#22c55e" : "rgba(233,238,252,0.75)";
-      }
+      btnSaveSchedule.disabled = !isDirty;
+      status.textContent = isDirty ? "Unsaved changes" : "Saved";
+      status.style.color = isDirty ? "#22c55e" : "rgba(233,238,252,0.75)";
     }
 
-    // Normalize match object to be BYE-safe and id-safe
     function normalizeMatch(m) {
       const player1 = m.player1 ?? "";
       const player2 =
@@ -199,56 +293,36 @@
 
       const isBye = (m.player2Id == null) || (String(player2).toUpperCase() === "BYE") || !!m.isBye;
 
-      return {
-        ...m,
-        player1,
-        player2,
-        isBye
-      };
+      return { ...m, player1, player2, isBye };
     }
 
     function getPlayerByNameAndLevel(name, level) {
       return allPlayers.find(p => Number(p.level) === Number(level) && p.name === name) || null;
     }
 
-    function getPlayerNamesByLevel(level) {
-      return allPlayers
-        .filter(p => Number(p.level) === Number(level))
-        .map(p => p.name)
-        .sort((a, b) => a.localeCompare(b));
-    }
-
-    // ---------- Modal helpers ----------
     function openModal({ title, bodyHtml, onSubmit }) {
       modalTitle.textContent = title;
       modalBody.innerHTML = bodyHtml;
       modalOnSubmit = onSubmit;
-
       modalBackdrop.classList.remove("hidden");
-      modalBackdrop.setAttribute("aria-hidden", "false");
-
       const first = modalBody.querySelector("input, select, textarea, button");
       if (first) first.focus();
     }
 
     function closeModal() {
       modalBackdrop.classList.add("hidden");
-      modalBackdrop.setAttribute("aria-hidden", "true");
       modalBody.innerHTML = "";
       modalOnSubmit = null;
     }
 
     modalClose.addEventListener("click", closeModal);
     modalCancel.addEventListener("click", closeModal);
-
     modalBackdrop.addEventListener("click", (e) => {
       if (e.target === modalBackdrop) closeModal();
     });
 
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !modalBackdrop.classList.contains("hidden")) {
-        closeModal();
-      }
+      if (e.key === "Escape" && !modalBackdrop.classList.contains("hidden")) closeModal();
     });
 
     modalForm.addEventListener("submit", async (e) => {
@@ -258,14 +332,13 @@
       }
     });
 
-    // ---------- Players ----------
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
 
       const name = document.getElementById("name").value.trim();
       const level = document.getElementById("level").value;
 
-      const response = await fetch("/add-player", {
+      const response = await authFetch("/add-player", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, level })
@@ -278,7 +351,7 @@
     });
 
     async function loadPlayers() {
-      const response = await fetch("/players");
+      const response = await authFetch("/players");
       const players = await response.json();
       allPlayers = players;
       renderPlayers(players);
@@ -288,7 +361,7 @@
       const tbody = document.querySelector("#playerTable tbody");
       tbody.innerHTML = "";
 
-      const sorted = [...players].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      const sorted = [...players].sort((a, b) => Number(b.score ?? 0) - Number(a.score ?? 0));
 
       sorted.forEach((p, index) => {
         const tr = document.createElement("tr");
@@ -303,11 +376,8 @@
         tdLevel.textContent = p.level;
 
         const tdScore = document.createElement("td");
-
-		const scoreNum = Number(p.score ?? 0);
-		tdScore.textContent = scoreNum % 1 === 0
-		  ? scoreNum
-		  : scoreNum.toFixed(1);
+        const scoreNum = Number(p.score ?? 0);
+        tdScore.textContent = scoreNum % 1 === 0 ? scoreNum : scoreNum.toFixed(1);
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
@@ -336,7 +406,8 @@
     }
 
     async function deletePlayer(id) {
-      await fetch(`/players/${id}`, { method: "DELETE" });
+      if (!confirm("Delete this player?")) return;
+      await authFetch(`/players/${id}`, { method: "DELETE" });
       loadPlayers();
     }
 
@@ -348,7 +419,6 @@
             <label for="mp_name">Name</label>
             <input id="mp_name" name="name" type="text" value="${escapeHtml(currentName)}" required />
           </div>
-
           <div class="field">
             <label for="mp_level">Level</label>
             <select id="mp_level" name="level">
@@ -357,21 +427,20 @@
               <option value="3" ${String(currentLevel) === "3" ? "selected" : ""}>Level 3</option>
             </select>
           </div>
-
           <div class="field">
             <label for="mp_score">Score</label>
             <input id="mp_score" name="score" type="number" step="0.5" value="${currentScore ?? 0}" />
           </div>
         `,
         onSubmit: async (fd) => {
-          const name = fd.get("name").toString().trim();
-          const level = fd.get("level").toString();
-          const score = fd.get("score").toString();
-
-          await fetch(`/players/${id}`, {
+          await authFetch(`/players/${id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, level, score })
+            body: JSON.stringify({
+              name: fd.get("name").toString().trim(),
+              level: fd.get("level").toString(),
+              score: fd.get("score").toString()
+            })
           });
 
           closeModal();
@@ -380,7 +449,6 @@
       });
     }
 
-    // ---------- Schedules ----------
     btnGenerate.addEventListener("click", generateSchedule);
     btnFilter.addEventListener("click", applyDateFilter);
     btnClearFilter.addEventListener("click", clearDateFilter);
@@ -388,15 +456,14 @@
     btnSaveSchedule.addEventListener("click", saveSchedule);
 
     async function generateSchedule() {
-      const res = await fetch("/schedule", { method: "POST" });
+      const res = await authFetch("/schedule", { method: "POST" });
       const newSchedule = await res.json();
-
       renderSchedule(newSchedule);
       loadSchedules();
     }
 
     async function loadSchedules() {
-      const res = await fetch("/schedules");
+      const res = await authFetch("/schedules");
       const schedules = await res.json();
 
       scheduleList.innerHTML = "";
@@ -434,7 +501,7 @@
         return;
       }
 
-      const res = await fetch(`/schedules/${id}`);
+      const res = await authFetch(`/schedules/${id}`);
       const schedule = await res.json();
 
       renderSchedule(schedule);
@@ -442,12 +509,12 @@
     }
 
     async function deleteSchedule(id) {
-      await fetch(`/schedules/${id}`, { method: "DELETE" });
+      if (!confirm("Delete this schedule?")) return;
+      await authFetch(`/schedules/${id}`, { method: "DELETE" });
       await loadSchedules();
     }
 
     function renderSchedule(schedule) {
-      // Normalize matches for BYE
       const normalized = {
         ...schedule,
         matches: Array.isArray(schedule.matches) ? schedule.matches.map(normalizeMatch) : []
@@ -482,7 +549,7 @@
         tdPlayer.textContent = m.player1;
 
         const tdOpponent = document.createElement("td");
-        tdOpponent.textContent = m.player2; // "BYE" if no opponent
+        tdOpponent.textContent = m.player2;
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
@@ -529,21 +596,13 @@
     }
 
     function editMatch(m) {
-      if (!currentSchedule) return;
+      if (!currentSchedule || !m.matchId) return;
 
-      if (!m.matchId) {
-        alert("This schedule/match is missing matchId. Generate a new schedule.");
-        return;
-      }
-
-      // Build id->name lists by level
       const playersAtLevel = allPlayers
         .filter(p => Number(p.level) === Number(m.level))
         .sort((a, b) => a.name.localeCompare(b.name));
 
-      // Ensure current selections are available
       const byeOption = { id: null, name: "BYE" };
-
       const opponentOptions = [byeOption, ...playersAtLevel];
 
       const player1Id = m.player1Id ?? getPlayerByNameAndLevel(m.player1, m.level)?.id ?? null;
@@ -559,7 +618,6 @@
             <label for="mm_date">Date</label>
             <input id="mm_date" name="date" type="date" value="${escapeHtml(m.date)}" required />
           </div>
-
           <div class="field">
             <label for="mm_player1Id">Player</label>
             <select id="mm_player1Id" name="player1Id">
@@ -570,7 +628,6 @@
               `).join("")}
             </select>
           </div>
-
           <div class="field">
             <label for="mm_player2Id">Opponent</label>
             <select id="mm_player2Id" name="player2Id">
@@ -586,11 +643,7 @@
                 </option>
               `).join("")}
             </select>
-            <div style="margin-top:6px; opacity:0.8; font-size:0.9rem;">
-              Choose <strong>BYE</strong> for an odd-player sit-out.
-            </div>
           </div>
-
           <div class="field">
             <label for="mm_status">Status</label>
             <select id="mm_status" name="status">
@@ -599,69 +652,46 @@
               ).join("")}
             </select>
           </div>
-
           <div class="field">
             <label for="mm_result">Result (optional)</label>
             <input id="mm_result" name="result" type="text"
               placeholder="e.g. 1-0, 0-1, 0.5-0.5"
               value="${escapeHtml(m.result ?? "")}" />
           </div>
-
           <div class="field">
             <label for="mm_notes">Notes (optional)</label>
             <textarea id="mm_notes" name="notes">${escapeHtml(m.notes ?? "")}</textarea>
           </div>
         `,
         onSubmit: async (fd) => {
-          const date = fd.get("date").toString();
-
           const newP1Id = fd.get("player1Id").toString();
-          const rawP2Id = fd.get("player2Id").toString(); // "" means BYE
-
-          const status = fd.get("status").toString();
-          const result = fd.get("result").toString().trim() || null;
-          const notes = fd.get("notes").toString().trim() || "";
+          const rawP2Id = fd.get("player2Id").toString();
 
           const player1Obj = allPlayers.find(p => String(p.id) === String(newP1Id));
-          if (!player1Obj) {
-            alert("Could not resolve Player. Try reloading the page.");
-            return;
-          }
-
           const player2Obj = rawP2Id
             ? allPlayers.find(p => String(p.id) === String(rawP2Id))
             : null;
 
-          // Prevent same player vs same player (but allow BYE)
           if (player2Obj && String(player1Obj.id) === String(player2Obj.id)) {
             alert("Player and Opponent cannot be the same.");
             return;
           }
 
-          // Draft update only (no server call here)
           const idx = currentSchedule.matches.findIndex(x => x.matchId === m.matchId);
-          if (idx === -1) {
-            alert("Match not found in current schedule.");
-            return;
-          }
+          if (idx === -1) return;
 
-          const updatedMatch = {
+          currentSchedule.matches[idx] = normalizeMatch({
             ...currentSchedule.matches[idx],
-            date,
-            status,
-            result,
-            notes,
-
-            // Keep BOTH ids and names so the server can persist correctly
+            date: fd.get("date").toString(),
+            status: fd.get("status").toString(),
+            result: fd.get("result").toString().trim() || null,
+            notes: fd.get("notes").toString().trim() || "",
             player1Id: player1Obj.id,
             player1: player1Obj.name,
-
             player2Id: player2Obj ? player2Obj.id : null,
             player2: player2Obj ? player2Obj.name : "BYE",
             isBye: !player2Obj
-          };
-
-          currentSchedule.matches[idx] = normalizeMatch(updatedMatch);
+          });
 
           closeModal();
           renderSchedule(currentSchedule);
@@ -673,7 +703,6 @@
     async function saveSchedule() {
       if (!currentSchedule?.id) return;
 
-      // Send ids if we have them; server PUT is now BYE-capable (player2Id can be null)
       const payload = {
         ...currentSchedule,
         matches: (currentSchedule.matches || []).map(m => ({
@@ -682,25 +711,16 @@
           status: m.status,
           result: m.result ?? null,
           notes: m.notes ?? "",
-
-          // ids are what the server updates
           player1Id: m.player1Id ?? null,
-          player2Id: (m.player2Id == null ? null : m.player2Id),
+          player2Id: m.player2Id == null ? null : m.player2Id,
         }))
       };
 
-      const res = await fetch(`/schedules/${currentSchedule.id}`, {
+      const res = await authFetch(`/schedules/${currentSchedule.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        console.error("Save schedule failed:", res.status, txt);
-        alert("Save failed. Check console.");
-        return;
-      }
 
       const saved = await res.json();
       currentSchedule = {
@@ -720,27 +740,21 @@
       setScheduleDirty(false);
     }
 
-    // ---------- Init ----------
-    document.addEventListener("DOMContentLoaded", () => {
-      loadPlayers();
-      loadSchedules();
+    document.addEventListener("DOMContentLoaded", async () => {
+      try {
+        const me = await authMe();
+        if (!me?.authenticated) {
+          showLogin("");
+          return;
+        }
+
+        hideLogin();
+        await loadPlayers();
+        await loadSchedules();
+      } catch {
+        showLogin("Please sign in.");
+      }
     });
-	
-	//Script for dynamically setting copyright date
-        function displayDateRange() {
-		var currentDate = new Date();
-		var dateElements = document.querySelectorAll(".date");
-
-		var options = { year: 'numeric' };
-		dateElements.forEach(function (dateElement, i) {
-			var date = new Date(currentDate);
-			date.setDate(currentDate.getDate() - i);
-			dateElement.innerHTML = date.toLocaleDateString(undefined, options);
-		});
-	}
-
-	// Call the function to display the date range
-	displayDateRange();
   </script>
 </body>
 </html>
