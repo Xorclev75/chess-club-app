@@ -256,7 +256,13 @@ select {
 
   .level-divider td {
     padding-top: 20px;
+  }  
+
+  .card {
+    border: none !important;
+    box-shadow: none !important;
   }
+
 }
 
 
