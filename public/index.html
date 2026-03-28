@@ -376,10 +376,7 @@
         tdLevel.textContent = p.level;
 
         const tdScore = document.createElement("td");
-        const scoreNum = parseFloat(p.score ?? 0);
-		tdScore.textContent = Number.isInteger(scoreNum)
-		  ? scoreNum
-		  : scoreNum.toFixed(1);
+		tdScore.textContent = parseFloat(p.score ?? 0);
 
         const tdActions = document.createElement("td");
         tdActions.className = "no-print";
