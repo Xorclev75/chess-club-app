@@ -428,7 +428,7 @@
           </div>
           <div class="field">
             <label for="mp_score">Score</label>
-            <input id="mp_score" name="score" type="number" step="0.5" value="${currentScore ?? 0}" />
+            <input id="mp_score" name="score" type="number" step="0.5" value="${parseFloat(currentScore ?? 0)}" />
           </div>
         `,
         onSubmit: async (fd) => {
