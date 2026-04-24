@@ -72,24 +72,45 @@ function generateRoundRobin(players) {
   return matches;
 }
 
-function getNextThursday(startDate = new Date()) {
-  const date = new Date(startDate);
-  const day = date.getDay(); // 0=Sun ... 4=Thu
-  const daysUntilThursday = (4 - day + 7) % 7 || 7; // next Thursday (not today)
-  date.setDate(date.getDate() + daysUntilThursday);
-  return date;
+function getFirstAndThirdTuesdays(startDate = new Date(), count = 20) {
+  const dates = [];
+  let current = new Date(startDate);
+
+  while (dates.length < count) {
+    const year = current.getFullYear();
+    const month = current.getMonth();
+
+    // Find first day of month
+    const firstDay = new Date(year, month, 1);
+
+    // Find first Tuesday
+    const firstTuesdayOffset = (2 - firstDay.getDay() + 7) % 7;
+    const firstTuesday = new Date(year, month, 1 + firstTuesdayOffset);
+
+    // Third Tuesday = first Tuesday + 14 days
+    const thirdTuesday = new Date(firstTuesday);
+    thirdTuesday.setDate(firstTuesday.getDate() + 14);
+
+    // Only include future dates
+    if (firstTuesday >= startDate) dates.push(new Date(firstTuesday));
+    if (thirdTuesday >= startDate) dates.push(new Date(thirdTuesday));
+
+    // Move to next month
+    current.setMonth(current.getMonth() + 1);
+    current.setDate(1);
+  }
+
+  return dates.sort((a, b) => a - b);
 }
 
 function scheduleMatches(matches, startDate = new Date()) {
-  const firstThursday = getNextThursday(startDate);
-
   const hasRounds = matches.some((m) => Number.isFinite(m.round));
 
-  // If round info exists, schedule one round per week (same date within a round)
+  const scheduleDates = getFirstAndThirdTuesdays(startDate, 50);
+
   if (hasRounds) {
     return matches.map((match) => {
-      const matchDate = new Date(firstThursday);
-      matchDate.setDate(firstThursday.getDate() + (match.round - 1) * 7);
+      const matchDate = scheduleDates[match.round - 1];
 
       return {
         ...match,
@@ -98,10 +119,9 @@ function scheduleMatches(matches, startDate = new Date()) {
     });
   }
 
-  // Fallback: old behavior (one match per week)
+  // fallback
   return matches.map((match, index) => {
-    const matchDate = new Date(firstThursday);
-    matchDate.setDate(firstThursday.getDate() + index * 7);
+    const matchDate = scheduleDates[index];
 
     return {
       ...match,
