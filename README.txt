@@ -11,7 +11,7 @@ A web app for managing HCS chess club members and matches
 ## Tech Stack
 - Node.JS
 - Express
-- PostgreSQL
+- PostgreSQL (Supabase)
 - Render (deployment)
 
 
